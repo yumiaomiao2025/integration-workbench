@@ -41,6 +41,7 @@ export type Evidence = NetworkEvidence | ConsoleEvidence;
 export type Task = TaskInput & {
   id: string;
   createdAt: string;
+  chromeDataDir?: string;
   evidence: Evidence[];
 };
 
@@ -56,12 +57,11 @@ export type CandidateTab = { id: string; title: string; url: string };
 export type ConnectionStatus = {
   state: 'idle' | 'connecting' | 'connected' | 'disconnected' | 'error';
   message: string;
-  activeTaskId: string | null;
 };
 
 export type LiveCapture = {
   revision: number;
-  state: 'inactive' | 'waiting' | 'choose' | 'attached';
+  state: 'waiting' | 'choose' | 'attached';
   message: string;
   startedAt: string | null;
   tab: CandidateTab | null;

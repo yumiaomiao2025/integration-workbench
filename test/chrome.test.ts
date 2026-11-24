@@ -12,7 +12,7 @@ import { listen, stop, until } from './support.ts';
 
 const executable = process.env.WORKBENCH_TEST_CHROME;
 
-test('attaches to an already open Chrome tab without reloading and keeps listening after navigation', {
+test('collects two tabs in one Chrome instance and keeps listening after navigation', {
   skip: executable ? false : 'Set WORKBENCH_TEST_CHROME to the Chrome executable to run this test',
 }, async (t) => {
   const dataDir = await mkdtemp(join(tmpdir(), 'workbench-chrome-'));
@@ -35,15 +35,18 @@ test('attaches to an already open Chrome tab without reloading and keeps listeni
   });
   const origin = await listen(fixture);
   const pageUrl = `${origin}/orders`;
+  const secondaryUrl = `${origin}/inventory`;
   const chrome = spawn(executable!, [
     '--headless=new', '--disable-gpu', '--disable-background-networking', '--no-first-run', '--no-default-browser-check',
     `--user-data-dir=${dataDir}`, '--remote-debugging-port=0', pageUrl,
   ], { stdio: 'ignore', windowsHide: true });
   const exited = once(chrome, 'exit').catch(() => []);
   let driver: CdpConnection | undefined;
-  const collector = new ChromeCollector(dataDir);
+  const collector = new ChromeCollector(dataDir, pageUrl);
+  const secondary = new ChromeCollector(dataDir, secondaryUrl);
   t.after(async () => {
     collector.disconnect();
+    secondary.disconnect();
     if (driver) await driver.send('Browser.close').catch(() => {});
     driver?.close();
     if (chrome.exitCode === null && !chrome.killed) chrome.kill();
@@ -60,25 +63,34 @@ test('attaches to an already open Chrome tab without reloading and keeps listeni
   const pageSession = await until(getPageSession);
   assert.equal(typeof pageSession, 'string');
 
-  collector.activate({ id: 'orders', url: pageUrl });
   collector.connect();
-  await until(async () => collector.live('orders').state === 'attached' ? true : undefined);
-  assert.equal(collector.live('orders').tab?.id, tab.targetId);
+  await until(async () => collector.live().state === 'attached' ? true : undefined);
+  assert.equal(collector.live().tab?.id, tab.targetId);
   assert.equal(await getPageSession(), pageSession);
   await devtools.send('Runtime.evaluate', { expression: 'document.querySelector("#run").click()' }, sessionId);
   const entries = await until(async () => {
-    const entries = collector.live('orders').entries;
+    const entries = collector.live().entries;
     return entries.some((entry) => entry.kind === 'network' && entry.url === `${origin}/api/orders`)
       && entries.some((entry) => entry.kind === 'console' && entry.message === 'request complete 200') ? entries : undefined;
   });
   assert.doesNotMatch(JSON.stringify(entries), /quite-private|before connecting/);
 
+  const { targetId: secondaryTarget } = await devtools.send('Target.createTarget', { url: secondaryUrl });
+  secondary.connect();
+  await until(async () => secondary.live().tab?.id === secondaryTarget ? true : undefined);
+  const { sessionId: secondarySession } = await devtools.send('Target.attachToTarget', { targetId: secondaryTarget, flatten: true });
+  await devtools.send('Runtime.evaluate', { expression: 'console.error("secondary workspace only")' }, secondarySession);
+  await until(async () => secondary.live().entries.some((entry) => entry.kind === 'console' && entry.message === 'secondary workspace only') ? true : undefined);
+  assert.doesNotMatch(JSON.stringify(collector.live().entries), /secondary workspace only/);
+  secondary.disconnect();
+  assert.equal(collector.live().tab?.id, tab.targetId);
+
   await devtools.send('Page.navigate', { url: `${origin}/orders/details` }, sessionId);
-  await until(async () => collector.live('orders').tab?.url.endsWith('/details') ? true : undefined);
+  await until(async () => collector.live().tab?.url.endsWith('/details') ? true : undefined);
   await until(async () => {
     const current = await getPageSession();
     return current && current !== pageSession ? true : undefined;
   });
   await devtools.send('Runtime.evaluate', { expression: 'console.error("after navigation")' }, sessionId);
-  await until(async () => collector.live('orders').entries.some((entry) => entry.kind === 'console' && entry.message === 'after navigation') ? true : undefined);
+  await until(async () => collector.live().entries.some((entry) => entry.kind === 'console' && entry.message === 'after navigation') ? true : undefined);
 });

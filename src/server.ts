@@ -3,12 +3,13 @@ import { readFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { extname, join } from 'node:path';
 import { readConfig, settingsPath } from './config.ts';
+import type { Task } from './contracts.ts';
 import { HttpError, readJson, sendJson } from './http.ts';
 import { analyzeWithClaude, type EvidenceAnalyzer } from './modules/analysis/index.ts';
 import { ChromeCollector } from './modules/chrome/index.ts';
 import { checkChromeEndpoint } from './modules/chrome/cdp.ts';
 import { GitLab } from './modules/gitlab/index.ts';
-import { SettingsStore } from './modules/settings/index.ts';
+import { parseChromePath, SettingsStore } from './modules/settings/index.ts';
 import { parseTask, TaskStore } from './modules/tasks/index.ts';
 
 type Config = ReturnType<typeof readConfig>;
@@ -32,9 +33,27 @@ export async function createWorkbenchHandler(config: Config, analyze: EvidenceAn
   let gitlabConfig = settings.gitlab();
   const store = await TaskStore.open(config.dataFile, gitlabConfig.baseUrl);
   let gitlab = new GitLab(gitlabConfig);
-  const chrome = new ChromeCollector(settings.chromeDataDir());
+  const defaultChromeDirectory = settings.chromeDataDir();
+  const collectors = new Map<string, ChromeCollector>();
   const expectedHost = new URL(config.origin).host;
   let analysisRunning = false;
+
+  function collectorFor(task: Task) {
+    let collector = collectors.get(task.id);
+    if (!collector) {
+      collector = new ChromeCollector(task.chromeDataDir || defaultChromeDirectory, task.url);
+      collectors.set(task.id, collector);
+    }
+    return collector;
+  }
+
+  function configureCollector(task: Task) {
+    collectors.get(task.id)?.configure(task.chromeDataDir || defaultChromeDirectory, task.url);
+  }
+
+  function chromeSettings(task: Task) {
+    return { dataDir: task.chromeDataDir || '', defaultDataDir: defaultChromeDirectory };
+  }
 
   async function route(request: IncomingMessage, response: ServerResponse) {
     setHeaders(response);
@@ -70,16 +89,6 @@ export async function createWorkbenchHandler(config: Config, analyze: EvidenceAn
       }
       return sendJson(response, settings.publicSettings());
     }
-    if (method === 'PUT' && path === '/api/settings/chrome') {
-      await settings.setChrome(await readJson(request));
-      chrome.setDataDirectory(settings.chromeDataDir());
-      return sendJson(response, settings.publicSettings());
-    }
-    if (method === 'POST' && path === '/api/settings/chrome/check') {
-      const dataDir = settings.chromePathToCheck(await readJson(request));
-      return sendJson(response, await checkChromeEndpoint(dataDir));
-    }
-
     if (path.startsWith('/api/gitlab/')) {
       const connection = gitlab;
       const sessionId = browserSession(request, response);
@@ -104,38 +113,47 @@ export async function createWorkbenchHandler(config: Config, analyze: EvidenceAn
       if (method === 'GET' && branches) return sendJson(response, await connection.branches(sessionId, branches[1], query));
     }
 
-    if (method === 'GET' && path === '/api/chrome/status') return sendJson(response, chrome.status());
-    if (method === 'POST' && path === '/api/chrome/connect') {
-      chrome.connect();
-      return sendJson(response, chrome.status(), 202);
-    }
-    if (method === 'POST' && path === '/api/chrome/disconnect') {
-      chrome.disconnect();
-      return sendJson(response, chrome.status());
-    }
-
     if (method === 'GET' && path === '/api/tasks') return sendJson(response, store.list());
     if (method === 'POST' && path === '/api/tasks') {
       const task = await store.create(parseTask(await readJson(request), gitlabConfig.baseUrl));
-      chrome.activate(task);
       return sendJson(response, task, 201);
     }
-    const taskPath = /^\/api\/tasks\/([\da-f-]{36})(?:\/(activate|live|tab|evidence|analysis))?$/.exec(path);
+    const taskPath = /^\/api\/tasks\/([\da-f-]{36})(?:\/(live|tab|evidence|analysis|chrome(?:\/(?:check|connect|disconnect))?))?$/.exec(path);
     if (taskPath) {
       const [, id, action] = taskPath;
       const task = store.get(id);
       if (method === 'GET' && !action) return sendJson(response, task);
       if (method === 'PUT' && !action) {
         const next = await store.update(id, parseTask(await readJson(request), gitlabConfig.baseUrl));
-        if (chrome.status().activeTaskId === id) chrome.activate(next);
+        configureCollector(next);
         return sendJson(response, next);
       }
-      if (method === 'POST' && action === 'activate') {
-        chrome.activate(task);
+      if (action === 'chrome') {
+        if (method === 'GET') return sendJson(response, chromeSettings(task));
+        if (method === 'PUT') {
+          const dataDir = parseChromePath(await readJson(request));
+          const next = await store.update(id, { chromeDataDir: dataDir || undefined });
+          configureCollector(next);
+          return sendJson(response, chromeSettings(next));
+        }
+      }
+      if (method === 'POST' && action === 'chrome/check') {
+        const dataDir = parseChromePath(await readJson(request));
+        return sendJson(response, await checkChromeEndpoint(dataDir || defaultChromeDirectory));
+      }
+      if (method === 'POST' && action === 'chrome/connect') {
+        const chrome = collectorFor(task);
+        chrome.connect();
+        return sendJson(response, chrome.status(), 202);
+      }
+      if (method === 'POST' && action === 'chrome/disconnect') {
+        const chrome = collectorFor(task);
+        chrome.disconnect();
         return sendJson(response, chrome.status());
       }
       if (method === 'GET' && action === 'live') {
-        const capture = chrome.live(id);
+        const chrome = collectorFor(task);
+        const capture = chrome.live();
         const etag = `"${capture.revision}"`;
         response.setHeader('ETag', etag);
         if (request.headers['if-none-match'] === etag) {
@@ -145,12 +163,15 @@ export async function createWorkbenchHandler(config: Config, analyze: EvidenceAn
         return sendJson(response, { connection: chrome.status(), capture });
       }
       if (method === 'POST' && action === 'tab') {
-        chrome.choose(id, stringField(await readJson(request), 'tabId'));
-        return sendJson(response, chrome.live(id), 202);
+        const targetId = stringField(await readJson(request), 'tabId');
+        const chrome = collectorFor(store.get(id));
+        chrome.choose(targetId);
+        return sendJson(response, chrome.live(), 202);
       }
       if (method === 'POST' && action === 'evidence') {
         const ids = evidenceIds(await readJson(request));
-        const selected = chrome.selected(id, ids, store.get(id).evidence);
+        const current = store.get(id);
+        const selected = collectorFor(current).selected(ids, current.evidence);
         return sendJson(response, await store.saveEvidence(id, selected));
       }
       if (method === 'POST' && action === 'analysis') {
@@ -191,7 +212,10 @@ export async function createWorkbenchHandler(config: Config, analyze: EvidenceAn
       }
     });
   }
-  return { handle, close: () => chrome.disconnect() };
+  return { handle, close: () => {
+    for (const chrome of collectors.values()) chrome.disconnect();
+    collectors.clear();
+  } };
 }
 
 function evidenceIds(value: unknown) {

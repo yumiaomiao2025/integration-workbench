@@ -126,7 +126,7 @@ export function EvidencePanel({ task, capture, connection, loading, onNew, onCon
     <div className="evidence-heading">
       <div><h2 id="evidence-title">联调证据</h2><p id="analysis-scope">{task
         ? 'AI 分析会将勾选的证据及关联仓库和分支发给 Claude Code 配置的模型服务。'
-        : '查看请求和日志，勾选需要保存到任务的记录。'}</p></div>
+        : '查看请求和日志，勾选需要保存到工作区的记录。'}</p></div>
       <div className="evidence-actions">
         <button className="button secondary" type="button" disabled={!unsavedSelection.length || saving || analysisRunning} onClick={() => void save()}>
           <Icon name="bookmark" />{saving ? '保存中…' : unsavedSelection.length ? `保存所选 (${unsavedSelection.length})` : '保存所选'}
@@ -236,12 +236,12 @@ function EmptyEvidence({ view, loading, total, task, capture, connection, onNew,
   onNew: () => void; onConnect: () => void;
 }) {
   let title = '等待绑定测试标签页';
-  let description = '请在现有 Chrome 中打开任务配置的测试网址。';
+  let description = '请在现有 Chrome 中打开此工作区的测试网址。';
   let action: { label: string; icon: 'plus' | 'link'; onClick: () => void } | undefined;
-  if (loading) [title, description] = ['正在加载任务', '加载完成后可查看联调记录。'];
+  if (loading) [title, description] = ['正在加载工作区', '加载完成后可查看联调记录。'];
   else if (!task) {
-    [title, description] = ['还没有联调任务', '新建任务并填写测试网址，工作台会匹配已打开的 Chrome 标签页。'];
-    action = { label: '新建任务', icon: 'plus', onClick: onNew };
+    [title, description] = ['还没有工作区', '新建工作区并填写测试网址，工作台会匹配已打开的 Chrome 标签页。'];
+    action = { label: '新建工作区', icon: 'plus', onClick: onNew };
   } else if (total) [title, description] = ['没有符合筛选条件的记录', '可以修改关键词或切换筛选条件。'];
   else if (view === 'saved') [title, description] = ['还没有保存证据', '在请求或控制台中勾选记录，点击「保存所选」。'];
   else if (['idle', 'error', 'disconnected'].includes(connection.state)) {

@@ -5,11 +5,12 @@ import { Dialog, Icon } from './ui.tsx';
 
 export type SettingsPane = 'gitlab' | 'chrome';
 type Notify = (message: string, isError?: boolean) => void;
-type Settings = { gitlab: GitLabSettings; chrome: ChromeSettings };
+type Settings = { gitlab: GitLabSettings; chrome: ChromeSettings | null };
 
-export function ConnectionSettings({ initialPane, gitlabStatus, connection, fromEditor, onClose, setGitLabStatus,
+export function ConnectionSettings({ initialPane, workspace, gitlabStatus, connection, fromEditor, onClose, setGitLabStatus,
   refreshGitLab, refreshChrome, connectChrome, notify }: {
   initialPane: SettingsPane;
+  workspace: { id: string; title: string } | null;
   gitlabStatus: GitLabStatus | null;
   connection: ConnectionStatus;
   fromEditor: boolean;
@@ -24,31 +25,34 @@ export function ConnectionSettings({ initialPane, gitlabStatus, connection, from
   const [settings, setSettings] = useState<Settings | null>(null);
   const [loadError, setLoadError] = useState('');
   const [retry, setRetry] = useState(0);
+  const workspaceId = workspace?.id;
 
   useEffect(() => {
     const controller = new AbortController();
-    void api.settings(controller.signal).then((data) => {
-      if (!controller.signal.aborted) setSettings(data);
+    const { signal } = controller;
+    const chrome = workspaceId ? api.chromeSettings(workspaceId, signal) : null;
+    void Promise.all([api.settings(signal), chrome]).then(([{ gitlab }, chrome]) => {
+      if (!signal.aborted) setSettings({ gitlab, chrome });
     }).catch((error: unknown) => {
       if (!controller.signal.aborted) setLoadError(explain(error));
     });
     return () => { controller.abort(); };
-  }, [retry]);
+  }, [retry, workspaceId]);
 
-  return <Dialog id="settings-dialog" title="连接设置" description="配置用于联调的 GitLab 实例和本机 Chrome。" onClose={onClose}>
+  return <Dialog id="settings-dialog" title="连接设置" description="配置 GitLab 授权与当前工作区的 Chrome 连接。" onClose={onClose}>
     <div className="settings-tabs tabs" aria-label="连接类型">
       <button type="button" className={`evidence-tab${pane === 'gitlab' ? ' active' : ''}`} aria-pressed={pane === 'gitlab'} onClick={() => setPane('gitlab')}>
         <Icon name="git" />GitLab
       </button>
-      <button type="button" className={`evidence-tab${pane === 'chrome' ? ' active' : ''}`} aria-pressed={pane === 'chrome'} onClick={() => setPane('chrome')}>
+      {workspace && <button type="button" className={`evidence-tab${pane === 'chrome' ? ' active' : ''}`} aria-pressed={pane === 'chrome'} onClick={() => setPane('chrome')}>
         <Icon name="browser" />Chrome
-      </button>
+      </button>}
     </div>
     {settings ? <>
       <GitLabForm initial={settings.gitlab} visible={pane === 'gitlab'} status={gitlabStatus} fromEditor={fromEditor}
         refresh={refreshGitLab} setStatus={setGitLabStatus} notify={notify} />
-      <ChromeForm initial={settings.chrome} visible={pane === 'chrome'} connection={connection}
-        refresh={refreshChrome} connect={connectChrome} notify={notify} />
+      {workspace && settings.chrome && <ChromeForm workspace={workspace} initial={settings.chrome} visible={pane === 'chrome'} connection={connection}
+        refresh={refreshChrome} connect={connectChrome} notify={notify} />}
     </> : loadError ? <div className="settings-loading"><p role="alert">{loadError}</p>
       <button type="button" className="button secondary" onClick={() => { setLoadError(''); setRetry((value) => value + 1); }}>重试</button>
     </div> : <p className="settings-loading" role="status">正在读取本机设置…</p>}
@@ -169,8 +173,9 @@ function GitLabForm({ initial, visible, status, fromEditor, refresh, setStatus, 
   </form>;
 }
 
-function ChromeForm({ initial, visible, connection, refresh, connect, notify }: {
-  initial: ChromeSettings; visible: boolean; connection: ConnectionStatus; refresh: () => void; connect: () => void; notify: Notify;
+function ChromeForm({ workspace, initial, visible, connection, refresh, connect, notify }: {
+  workspace: { id: string; title: string }; initial: ChromeSettings; visible: boolean; connection: ConnectionStatus;
+  refresh: () => void; connect: () => void; notify: Notify;
 }) {
   const [config, setConfig] = useState(initial);
   const [directory, setDirectory] = useState(initial.dataDir);
@@ -201,7 +206,7 @@ function ChromeForm({ initial, visible, connection, refresh, connect, notify }: 
     setChecking(true);
     setDetection(null);
     try {
-      const result = await api.chromeCheck(directory, controller.signal);
+      const result = await api.chromeCheck(workspace.id, directory, controller.signal);
       if (!controller.signal.aborted) setDetection(result);
     } catch (failure) {
       if (!controller.signal.aborted) setError(explain(failure));
@@ -216,11 +221,11 @@ function ChromeForm({ initial, visible, connection, refresh, connect, notify }: 
     setSaving(true);
     setError('');
     try {
-      const { chrome } = await api.saveChrome(directory);
+      const chrome = await api.saveChrome(workspace.id, directory);
       setConfig(chrome);
       changeDirectory(chrome.dataDir);
       refresh();
-      notify('Chrome 设置已保存。');
+      notify('工作区的 Chrome 设置已保存。');
     } catch (failure) {
       setError(explain(failure));
     } finally {
@@ -231,12 +236,13 @@ function ChromeForm({ initial, visible, connection, refresh, connect, notify }: 
   return <form hidden={!visible} onSubmit={(event) => void save(event)}>
     <div className="dialog-body">
       <div className="settings-instructions">
+        <p>当前工作区为「{workspace.title}」。</p>
         <p>在已经打开的 Chrome 144 或更新版本中访问下方地址，启用远程调试。连接时，Chrome 会请求你的许可。</p>
         <CopyAddress id="settings-chrome-address" label="Chrome 远程调试设置地址" value="chrome://inspect/#remote-debugging" />
       </div>
       <label className="field">Chrome 用户数据目录<input autoComplete="off" spellCheck={false} maxLength={2048}
         placeholder={config.defaultDataDir} value={directory} onChange={(event) => changeDirectory(event.target.value)} /></label>
-      <p className="settings-field-help">留空使用自动查找的目录。如果使用自定义配置，请填写 Chrome 用户数据根目录。默认路径为 {config.defaultDataDir}。</p>
+      <p className="settings-field-help">留空使用默认目录 {config.defaultDataDir}。如需连接另一个 Chrome 实例，请填入该实例的用户数据根目录。</p>
       {detection && <p className={`form-note ${detection.ready ? 'setting-ready' : 'setting-unavailable'}`} role="status">{detection.message}</p>}
       {error && <p className="form-error" role="alert">{error}</p>}
     </div>

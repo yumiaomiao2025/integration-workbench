@@ -7,22 +7,24 @@ import { Badge, formatTime, Icon } from './ui.tsx';
 export function Sidebar({ tasks, selectedId, loading, onNew, onSelect }: {
   tasks: TaskSummary[]; selectedId?: string; loading: boolean; onNew: () => void; onSelect: (id: string) => void;
 }) {
-  return <aside className="sidebar" aria-label="任务导航">
+  return <aside className="sidebar" aria-label="工作区导航">
     <div className="brand"><span className="brand-mark"><Icon name="brand" /></span><span>联调工作台</span></div>
-    <button className="button sidebar-new" type="button" onClick={onNew}><Icon name="plus" />新建任务</button>
-    <div className="sidebar-section"><span>联调任务</span><span className="sidebar-count">{tasks.length}</span></div>
-    <nav className="task-list" aria-label="联调任务">
+    <button className="button sidebar-new" type="button" onClick={onNew}><Icon name="plus" />新建工作区</button>
+    <div className="sidebar-section"><span>工作区</span><span className="sidebar-count">{tasks.length}</span></div>
+    <nav className="task-list" aria-label="工作区">
       {tasks.length ? tasks.map((task) => <button type="button" key={task.id} className="task-item" title={task.title}
         aria-current={selectedId === task.id ? 'page' : undefined} onClick={() => onSelect(task.id)}><Icon name="list" /><span>{task.title}</span></button>)
-        : <span className="sidebar-empty">{loading ? '正在加载任务…' : '暂无任务'}</span>}
+        : <span className="sidebar-empty">{loading ? '正在加载工作区…' : '暂无工作区'}</span>}
     </nav>
-    <div className="sidebar-bottom"><span className="local-icon"><Icon name="front" /></span><span>本机工作区<small>证据保存在当前电脑</small></span></div>
+    <div className="sidebar-bottom"><span className="local-icon"><Icon name="front" /></span><span>本机存储<small>证据保存在当前电脑</small></span></div>
   </aside>;
 }
 
 export function TopBar({ task, gitlab, onSettings }: { task: Task | null; gitlab: GitLabStatus | null; onSettings: () => void }) {
   return <header className="topbar">
-    <div className="breadcrumb"><Icon name="list" /><span>联调任务</span><Icon name="chevron" className="breadcrumb-separator" /><strong>{task?.title || '工作区'}</strong></div>
+    <div className="breadcrumb"><Icon name="list" /><span>工作区</span>
+      {task && <><Icon name="chevron" className="breadcrumb-separator" /><strong>{task.title}</strong></>}
+    </div>
     <div className="topbar-actions">
       <button className="button gitlab-button" type="button" onClick={onSettings}>
         <Icon name="git" /><span className="account-name">{gitlab?.profile?.username || 'GitLab'}</span>
@@ -70,11 +72,11 @@ export function ChromeCard({ connection, capture, task, onConnect, onDisconnect,
   const selected = candidates.some((entry) => entry.id === tabId) ? tabId : '';
   let label = '未连接';
   let color: 'ok' | 'pending' | 'error' | undefined;
-  let help = '在已打开的 Chrome 中启用远程调试，再连接现有标签页。';
+  let help = task ? '在已打开的 Chrome 中启用远程调试，再连接现有标签页。' : '新建工作区后，可以连接现有 Chrome 标签页。';
   if (connected) {
     label = tab ? '采集中' : '已连接';
     color = 'ok';
-    help = task ? capture?.message || '正在查找匹配的标签页…' : '新建任务后，工作台会匹配已打开的测试网址。';
+    help = capture?.message || '正在查找匹配的标签页…';
   } else if (connecting) {
     label = '连接中'; color = 'pending'; help = connection.message;
   } else if (state === 'error' || state === 'disconnected') {
@@ -100,10 +102,10 @@ export function ChromeCard({ connection, capture, task, onConnect, onDisconnect,
         <button className="button secondary" type="submit">接入</button>
       </form>}
     </div>
-    <div className="chrome-actions">
+    {task && <div className="chrome-actions">
       {connected || connecting ? <button className="button secondary" type="button" onClick={onDisconnect}>{connecting ? '取消连接' : '断开连接'}</button>
         : <button className="button primary" type="button" onClick={onConnect}><Icon name="link" />{state === 'idle' ? '连接 Chrome' : '重新连接'}</button>}
       <button className="button secondary" type="button" onClick={onSettings}>Chrome 设置</button>
-    </div>
+    </div>}
   </section>;
 }

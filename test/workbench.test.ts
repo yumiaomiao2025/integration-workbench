@@ -187,7 +187,7 @@ test('confidential app secrets stay out of the settings API and plaintext files'
   }
 });
 
-test('chooses among existing tabs and continuously collects and saves only selected evidence', async (t) => {
+test('keeps Chrome bindings and evidence isolated across concurrent workspaces', async (t) => {
   const data = await mkdtemp(join(tmpdir(), 'workbench-cdp-'));
   const chrome = createServer();
   const chromeOrigin = await listen(chrome);
@@ -195,22 +195,23 @@ test('chooses among existing tabs and continuously collects and saves only selec
   const upstreamSends: string[] = [];
   const targetUrl = 'https://test.example.test/orders';
   const otherUrl = 'https://unrelated.example.test/';
-  let peer: WebSocket;
+  const peers: WebSocket[] = [];
   const target = (targetId: string, url: string) => ({ targetId, type: 'page', title: targetId, url, attached: false, canAccessOpener: false });
-  const send = (method: string, params: unknown, sessionId?: string) => peer.send(JSON.stringify({ method, params, sessionId }));
+  const send = (method: string, params: unknown, sessionId?: string, socket = peers[0]) => socket.send(JSON.stringify({ method, params, sessionId }));
   socketServer.on('connection', (socket) => {
-    peer = socket;
+    peers.push(socket);
     socket.on('message', (raw) => {
       const command = JSON.parse(raw.toString());
       upstreamSends.push(command.method);
       if (command.method === 'Target.setDiscoverTargets') {
         for (const info of [target('first', targetUrl), target('second', targetUrl), target('other', otherUrl)]) {
-          send('Target.targetCreated', { targetInfo: info });
+          send('Target.targetCreated', { targetInfo: info }, undefined, socket);
         }
       }
       if (command.method === 'Runtime.enable') {
-        send('Runtime.executionContextCreated', { context: { id: 1, origin: new URL(targetUrl).origin, auxData: { isDefault: true } } }, command.sessionId);
-        send('Runtime.consoleAPICalled', { executionContextId: 1, type: 'log', args: [{ type: 'string', value: 'before attachment' }], timestamp: Date.now() - 60_000 }, command.sessionId);
+        const pageOrigin = new URL(command.sessionId === 'session-other' ? otherUrl : targetUrl).origin;
+        send('Runtime.executionContextCreated', { context: { id: 1, origin: pageOrigin, auxData: { isDefault: true } } }, command.sessionId, socket);
+        send('Runtime.consoleAPICalled', { executionContextId: 1, type: 'log', args: [{ type: 'string', value: 'before attachment' }], timestamp: Date.now() - 60_000 }, command.sessionId, socket);
       }
       const result = command.method === 'Target.attachToTarget' ? { sessionId: `session-${command.params.targetId}` } : {};
       socket.send(JSON.stringify({ id: command.id, result, sessionId: command.sessionId }));
@@ -218,6 +219,11 @@ test('chooses among existing tabs and continuously collects and saves only selec
   });
   const chromePort = new URL(chromeOrigin).port;
   await writeFile(join(data, 'DevToolsActivePort'), `${chromePort}\n/devtools/browser/test\n`);
+  const otherDirectory = join(data, 'other-profile');
+  await mkdir(otherDirectory);
+  await writeFile(join(otherDirectory, 'DevToolsActivePort'), `${chromePort}\n/devtools/browser/test\n`);
+  const legacyDirectory = join(data, 'legacy-profile');
+  await writeFile(join(data, 'settings.json'), JSON.stringify({ version: 1, chromeDataDir: legacyDirectory }));
   const port = await availablePort();
   const origin = `http://127.0.0.1:${port}`;
   const dataFile = join(data, 'tasks.json');
@@ -249,15 +255,17 @@ test('chooses among existing tabs and continuously collects and saves only selec
     assert.ok(response.ok, `${response.status} ${path}`);
     return await response.json() as T;
   };
-  const blocked = await fetch(`${origin}/api/chrome/connect`, { method: 'POST', headers: { Origin: otherUrl } });
-  assert.equal(blocked.status, 403);
-  const before = await request<{ ready: boolean }>('/settings/chrome/check', 'POST', { dataDir: '' });
-  assert.equal(before.ready, false);
-  const found = await request<{ ready: boolean }>('/settings/chrome/check', 'POST', { dataDir: data });
-  assert.equal(found.ready, true);
-  await request('/settings/chrome', 'PUT', { dataDir: data });
   const taskFields = { title: '联调订单', url: targetUrl };
   const emptyTask = await request<Task>('/tasks', 'POST', taskFields);
+  const chromePath = `/tasks/${emptyTask.id}/chrome`;
+  const blocked = await fetch(`${origin}/api${chromePath}/connect`, { method: 'POST', headers: { Origin: otherUrl } });
+  assert.equal(blocked.status, 403);
+  assert.deepEqual(await request(chromePath), { dataDir: '', defaultDataDir: legacyDirectory });
+  const before = await request<{ ready: boolean }>(`${chromePath}/check`, 'POST', { dataDir: '' });
+  assert.equal(before.ready, false);
+  const found = await request<{ ready: boolean }>(`${chromePath}/check`, 'POST', { dataDir: data });
+  assert.equal(found.ready, true);
+  await request(chromePath, 'PUT', { dataDir: data });
   assert.deepEqual(emptyTask.frontend, []);
   assert.deepEqual(emptyTask.backend, []);
   const repository = (projectId: number, path: string, ...branches: string[]) => ({
@@ -268,7 +276,8 @@ test('chooses among existing tabs and continuously collects and saves only selec
   const task = await request<Task>(`/tasks/${emptyTask.id}`, 'PUT', { ...taskFields, frontend, backend });
   assert.deepEqual(task.frontend, frontend);
   assert.deepEqual(task.backend, backend);
-  await request('/chrome/connect', 'POST');
+  assert.equal(task.chromeDataDir, data);
+  await request(`${chromePath}/connect`, 'POST');
   const live = () => request<{ connection: ConnectionStatus; capture: LiveCapture }>(`/tasks/${task.id}/live`);
   const candidates = await until(async () => {
     const result = await live();
@@ -278,7 +287,7 @@ test('chooses among existing tabs and continuously collects and saves only selec
   assert.ok(!upstreamSends.includes('Target.attachToTarget'));
   await request(`/tasks/${task.id}/tab`, 'POST', { tabId: 'second' });
   await until(async () => (await live()).capture.state === 'attached' ? true : undefined);
-  await request('/settings/chrome', 'PUT', { dataDir: data });
+  await request(chromePath, 'PUT', { dataDir: data });
   assert.equal((await live()).capture.state, 'attached');
 
   const session = 'session-second';
@@ -300,6 +309,25 @@ test('chooses among existing tabs and continuously collects and saves only selec
   const network = entries.find((entry) => entry.kind === 'network');
   assert.deepEqual(network && [network.url, network.status, network.duration], ['https://api.example.test/orders', 422, 150]);
   const selected = [network!.id];
+  const other = await request<Task>('/tasks', 'POST', { title: '另一个工作区', url: otherUrl });
+  const otherPath = `/tasks/${other.id}`;
+  const otherLive = () => request<{ connection: ConnectionStatus; capture: LiveCapture }>(`${otherPath}/live`);
+  assert.deepEqual(await request(`${otherPath}/chrome`), { dataDir: '', defaultDataDir: legacyDirectory });
+  await request(`${otherPath}/chrome`, 'PUT', { dataDir: otherDirectory });
+  await request(`${otherPath}/chrome/connect`, 'POST');
+  await until(async () => (await otherLive()).capture.tab?.id === 'other' ? true : undefined);
+  assert.equal((await live()).capture.tab?.id, 'second');
+  send('Runtime.consoleAPICalled', { executionContextId: 1, type: 'log', args: [{ type: 'string', value: 'other workspace' }], timestamp: Date.now() }, 'session-other', peers[1]);
+  await until(async () => (await otherLive()).capture.entries.length === 1 ? true : undefined);
+  assert.doesNotMatch(JSON.stringify((await live()).capture.entries), /other workspace/);
+  const crossWorkspace = await fetch(`${origin}/api${otherPath}/evidence`, {
+    method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json', Connection: 'close' },
+    body: JSON.stringify({ ids: selected }),
+  });
+  assert.equal(crossWorkspace.status, 409);
+  await request(`${otherPath}/chrome/disconnect`, 'POST');
+  assert.equal((await otherLive()).connection.state, 'idle');
+  assert.equal((await live()).capture.tab?.id, 'second');
   const analysisPath = `/tasks/${task.id}/analysis`;
   const analyze = (ids: string[], from = origin) => fetch(`${origin}/api${analysisPath}`, {
     method: 'POST', headers: { Origin: from, 'Content-Type': 'application/json', Connection: 'close' },
@@ -317,7 +345,7 @@ test('chooses among existing tabs and continuously collects and saves only selec
 
   send('Target.targetInfoChanged', { targetInfo: target('second', `${new URL(targetUrl).origin}/orders/view/42`) });
   await until(async () => (await live()).capture.tab?.url.endsWith('/42') ? true : undefined);
-  assert.equal(upstreamSends.filter((method) => method === 'Target.attachToTarget').length, 1);
+  assert.equal(upstreamSends.filter((method) => method === 'Target.attachToTarget').length, 2);
   send('Runtime.consoleAPICalled', { executionContextId: 1, type: 'info', args: [{ type: 'string', value: 'still listening' }], timestamp: Date.now() }, session);
   await until(async () => (await live()).capture.entries.some((entry) => entry.kind === 'console' && entry.message === 'still listening') ? true : undefined);
   assert.ok(!upstreamSends.some((method) => ['Target.createTarget', 'Page.navigate', 'Runtime.evaluate'].includes(method)));
@@ -331,7 +359,9 @@ test('chooses among existing tabs and continuously collects and saves only selec
     assert.deepEqual(after.backend, backend);
     assert.equal(after.evidence.length, 1);
     assert.equal((await live()).capture.entries.length, 0);
-    assert.equal((await request<{ chrome: { dataDir: string } }>('/settings')).chrome.dataDir, data);
+    assert.deepEqual(await request(chromePath), { dataDir: data, defaultDataDir: legacyDirectory });
+    assert.deepEqual(await request(`${otherPath}/chrome`), { dataDir: otherDirectory, defaultDataDir: legacyDirectory });
+    assert.equal((await live()).connection.state, 'idle');
   } finally {
     await stop(reload);
   }

@@ -90,19 +90,6 @@ export class SettingsStore {
     });
   }
 
-  setChrome(input: unknown) {
-    const dataDir = this.parseChromePath(input);
-    return this.change(async () => {
-      const updated = { ...this.stored, chromeDataDir: dataDir };
-      await writeJsonFile(this.file, updated);
-      this.stored = updated;
-    });
-  }
-
-  chromePathToCheck(input: unknown) {
-    return this.parseChromePath(input) || this.defaults.chromeDataDir;
-  }
-
   private gitlabSettings(): GitLabSettings {
     if (this.stored.gitlab) {
       const { baseUrl, clientId, confidential } = this.stored.gitlab;
@@ -112,24 +99,24 @@ export class SettingsStore {
     return { baseUrl, clientId, clientSecret, confidential: Boolean(clientSecret) };
   }
 
-  private parseChromePath(input: unknown) {
-    const { dataDir } = fields(input);
-    if (typeof dataDir !== 'string' || dataDir.length > 2048 || dataDir.includes('\0')) {
-      throw new HttpError(400, '请输入有效的 Chrome 用户数据目录。');
-    }
-    const path = dataDir.trim().replace(/^"(.*)"$/, '$1');
-    if (!path) return '';
-    if (!isAbsolute(path) || (process.platform === 'win32' && !/^[a-z]:[\\/]/i.test(path))) {
-      throw new HttpError(400, '请输入本机 Chrome 用户数据目录的完整路径。');
-    }
-    return resolve(path);
-  }
-
   private change(action: () => Promise<void>) {
     const pending = this.pending.then(action);
     this.pending = pending.catch(() => {});
     return pending;
   }
+}
+
+export function parseChromePath(input: unknown) {
+  const { dataDir } = fields(input);
+  if (typeof dataDir !== 'string' || dataDir.length > 2048 || dataDir.includes('\0')) {
+    throw new HttpError(400, '请输入有效的 Chrome 用户数据目录。');
+  }
+  const path = dataDir.trim().replace(/^"(.*)"$/, '$1');
+  if (!path) return '';
+  if (!isAbsolute(path) || (process.platform === 'win32' && !/^[a-z]:[\\/]/i.test(path))) {
+    throw new HttpError(400, '请输入本机 Chrome 用户数据目录的完整路径。');
+  }
+  return resolve(path);
 }
 
 function fields(input: unknown) {

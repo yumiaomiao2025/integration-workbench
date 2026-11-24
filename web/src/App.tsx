@@ -48,15 +48,14 @@ export function App() {
     const signal = controller.signal;
     async function initialize() {
       try {
-        const [list, connection, status] = await Promise.all([api.tasks(signal), api.chromeStatus(signal), api.gitLabStatus(signal)]);
+        const [list, status] = await Promise.all([api.tasks(signal), api.gitLabStatus(signal)]);
         if (signal.aborted) return;
         setTasks(list);
         setGitLab(status);
-        const last = connection.activeTaskId || localStorage.getItem('last-task');
+        const last = localStorage.getItem('last-task');
         const initial = list.find((entry) => entry.id === last) ?? list[0];
         if (!initial) return;
         const selected = await api.task(initial.id, signal);
-        if (connection.activeTaskId !== initial.id) await api.activate(initial.id, signal);
         if (!signal.aborted) setTask(selected);
       } catch (error) {
         if (!signal.aborted) notify(explain(error), true);
@@ -78,7 +77,6 @@ export function App() {
     selecting.current = true;
     try {
       const selected = await api.task(id);
-      await api.activate(id);
       localStorage.setItem('last-task', id);
       setTask(selected);
     } catch (error) {
@@ -89,8 +87,9 @@ export function App() {
   }
 
   async function changeConnection(action: 'connect' | 'disconnect') {
+    if (!task) return;
     try {
-      await api.chromeConnect(action);
+      await api.chromeConnect(task.id, action);
       live.refresh();
     } catch (error) {
       notify(explain(error), true);
@@ -114,7 +113,7 @@ export function App() {
     setTask(saved);
     setEditor(null);
     live.refresh();
-    notify(editor?.task ? '任务已更新。' : '任务已创建。');
+    notify(editor?.task ? '工作区已更新。' : '工作区已创建。');
   }
 
   async function saveEvidence(id: string, ids: string[]) {
@@ -138,11 +137,11 @@ export function App() {
               {task ? <p className="task-url"><Icon name="link" /><span>{task.url}</span></p>
                 : <p>选择仓库和分支，查看现有 Chrome 标签页的请求与日志。</p>}
             </div>
-            {task && <button className="button secondary" type="button" onClick={() => setEditor({ task })}><Icon name="edit" />编辑任务</button>}
+            {task && <button className="button secondary" type="button" onClick={() => setEditor({ task })}><Icon name="edit" />编辑工作区</button>}
           </div>
           <div className="summary-grid">
             <RepositoryCard task={task} />
-            <ChromeCard connection={live.connection} capture={live.capture} task={task} onConnect={connect}
+            <ChromeCard key={task?.id} connection={live.connection} capture={live.capture} task={task} onConnect={connect}
               onDisconnect={() => void changeConnection('disconnect')} onSettings={() => setPane('chrome')} onChoose={(id) => void chooseTab(id)} />
           </div>
           <EvidencePanel task={task} capture={live.capture} connection={live.connection} loading={loading}
@@ -151,7 +150,7 @@ export function App() {
       </main>
     </div>
     {editor && <TaskEditor task={editor.task} gitlab={gitlab} onClose={() => setEditor(null)} onSettings={() => setPane('gitlab')} onSaved={saveTask} />}
-    {pane && <ConnectionSettings initialPane={pane} gitlabStatus={gitlab} connection={live.connection} fromEditor={Boolean(editor)}
+    {pane && <ConnectionSettings key={task?.id} initialPane={pane} workspace={task} gitlabStatus={gitlab} connection={live.connection} fromEditor={Boolean(editor)}
       onClose={() => setPane(null)} setGitLabStatus={setGitLab} refreshGitLab={refreshGitLab} refreshChrome={live.refresh}
       connectChrome={connect} notify={notify} />}
     {notice && <div className={`notice${notice.error ? ' error' : ''}`} role="status" aria-live="polite">

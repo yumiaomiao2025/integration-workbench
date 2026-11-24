@@ -17,7 +17,7 @@ export type GitLabSettings = {
 };
 export type GitLabSettingsInput = Pick<GitLabSettings, 'baseUrl' | 'clientId' | 'confidential'> & { clientSecret: string };
 export type ChromeSettings = { dataDir: string; defaultDataDir: string };
-type ConnectionSettings = { gitlab: GitLabSettings; chrome: ChromeSettings };
+type ConnectionSettings = { gitlab: GitLabSettings };
 export type ChromeDetection = { ready: boolean; message: string };
 export type Project = { id: number; path: string; defaultBranch?: string | null };
 export type Branch = { name: string; isDefault?: boolean; commitSha: string };
@@ -53,7 +53,6 @@ function list<T>(path: string, search: string, page: number, signal: AbortSignal
 export const api = {
   tasks: (signal: AbortSignal) => json<TaskSummary[]>('/tasks', { signal }),
   task: (id: string, signal?: AbortSignal) => json<Task>(`/tasks/${id}`, { signal }),
-  activate: (id: string, signal?: AbortSignal) => json<ConnectionStatus>(`/tasks/${id}/activate`, { method: 'POST', signal }),
   saveTask: (id: string | undefined, body: TaskInput) => json<Task>(id ? `/tasks/${id}` : '/tasks', { method: id ? 'PUT' : 'POST', body }),
   saveEvidence: (id: string, ids: string[]) => json<Task>(`/tasks/${id}/evidence`, { method: 'POST', body: { ids } }),
   analyzeEvidence: (id: string, ids: string[]) => json<EvidenceAnalysis>(`/tasks/${id}/analysis`, { method: 'POST', body: { ids } }),
@@ -63,11 +62,11 @@ export const api = {
     if (response.status === 304) return null;
     return { status: await response.json() as LiveStatus, etag: response.headers.get('ETag') || '' };
   },
-  chromeStatus: (signal?: AbortSignal) => json<ConnectionStatus>('/chrome/status', { signal }),
-  chromeConnect: (action: 'connect' | 'disconnect') => json<ConnectionStatus>(`/chrome/${action}`, { method: 'POST' }),
-  chromeCheck: (dataDir: string, signal: AbortSignal) => json<ChromeDetection>('/settings/chrome/check', { method: 'POST', body: { dataDir }, signal }),
+  chromeConnect: (id: string, action: 'connect' | 'disconnect') => json<ConnectionStatus>(`/tasks/${id}/chrome/${action}`, { method: 'POST' }),
+  chromeCheck: (id: string, dataDir: string, signal: AbortSignal) => json<ChromeDetection>(`/tasks/${id}/chrome/check`, { method: 'POST', body: { dataDir }, signal }),
+  chromeSettings: (id: string, signal: AbortSignal) => json<ChromeSettings>(`/tasks/${id}/chrome`, { signal }),
   settings: (signal: AbortSignal) => json<ConnectionSettings>('/settings', { signal }),
-  saveChrome: (dataDir: string) => json<ConnectionSettings>('/settings/chrome', { method: 'PUT', body: { dataDir } }),
+  saveChrome: (id: string, dataDir: string) => json<ChromeSettings>(`/tasks/${id}/chrome`, { method: 'PUT', body: { dataDir } }),
   saveGitLab: (body: GitLabSettingsInput) => json<ConnectionSettings>('/settings/gitlab', { method: 'PUT', body }),
   gitLabStatus: (signal?: AbortSignal) => json<GitLabStatus>('/gitlab/status', { signal }),
   gitLabLogout: () => json<GitLabStatus>('/gitlab/logout', { method: 'POST' }),
