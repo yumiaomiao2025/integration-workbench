@@ -82,8 +82,9 @@ export function createSettings({ api, notify, explain, refreshGitLab, refreshChr
   }
 
   function gitlabDraft() {
+    const address = url.value.trim();
     return {
-      baseUrl: url.value.trim().replace(/\/+$/, ''), clientId: clientId.value.trim(),
+      baseUrl: parseGitLabUrl(address) || address, clientId: clientId.value.trim(),
       confidential: confidential.checked, clientSecret: confidential.checked ? secret.value : '',
     };
   }
@@ -111,7 +112,7 @@ export function createSettings({ api, notify, explain, refreshGitLab, refreshChr
     const instance = parseGitLabUrl(draft.baseUrl);
     const register = $('#settings-gitlab-register');
     register.hidden = !instance;
-    if (instance) register.href = `${instance}/-/user_settings/applications`;
+    if (instance) register.href = `${instance}/oauth/applications`;
     else register.removeAttribute('href');
   }
 
@@ -224,5 +225,7 @@ function parseGitLabUrl(value) {
   const url = URL.parse(value);
   if (!url || url.username || url.password || url.search || url.hash) return '';
   const isLocal = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
-  return url.protocol === 'https:' || (isLocal && url.protocol === 'http:') ? url.href.replace(/\/+$/, '') : '';
+  if (url.protocol !== 'https:' && !(isLocal && url.protocol === 'http:')) return '';
+  url.pathname = url.pathname.replace(/\/(?:oauth\/applications(?:\/\d+(?:\/edit)?)?|(?:-\/)?user_settings\/applications)\/?$/, '');
+  return url.href.replace(/\/+$/, '');
 }

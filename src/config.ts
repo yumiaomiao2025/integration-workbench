@@ -40,6 +40,7 @@ export function normalizeGitLabUrl(value: string) {
   if (url.protocol !== 'https:' && !(isLocal && url.protocol === 'http:')) {
     throw new HttpError(400, 'GitLab 实例地址应使用 HTTPS。本机测试实例可使用 HTTP。');
   }
+  url.pathname = url.pathname.replace(/\/(?:oauth\/applications(?:\/\d+(?:\/edit)?)?|(?:-\/)?user_settings\/applications)\/?$/, '');
   return url.href.replace(/\/+$/, '');
 }
 

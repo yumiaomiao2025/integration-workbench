@@ -26,6 +26,7 @@ test('personal GitLab OAuth validates state and PKCE, then lists projects and br
         const chunks: Uint8Array[] = [];
         for await (const chunk of request) chunks.push(chunk);
         const form = new URLSearchParams(Buffer.concat(chunks).toString());
+        assert.equal(form.has('client_secret'), false);
         if (form.get('grant_type') === 'authorization_code') {
           assert.equal(form.get('code'), 'personal-code');
           assert.equal(createHash('sha256').update(form.get('code_verifier')!).digest('base64url'), challenge);
@@ -80,7 +81,9 @@ test('personal GitLab OAuth validates state and PKCE, then lists projects and br
   });
   const settings = { baseUrl: gitlab, clientId: 'local-app', confidential: false };
   assert.equal((await install({ ...settings, baseUrl: 'file:///tmp' })).status, 400);
-  assert.equal((await install(settings)).status, 200);
+  const installed = await install({ ...settings, baseUrl: `${gitlab}/oauth/applications/42/edit` });
+  assert.equal(installed.status, 200);
+  assert.equal((await installed.json()).gitlab.baseUrl, gitlab);
   const start = async () => new URL((await fetchApi('/api/gitlab/login', auth)).headers.get('location')!);
   const bad = await start();
   assert.equal(bad.origin, gitlab);

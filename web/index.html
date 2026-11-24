@@ -113,16 +113,19 @@
     <form id="gitlab-settings-form" data-settings-pane="gitlab" hidden>
       <div class="dialog-body">
         <div class="settings-account form-note"><span id="settings-gitlab-account">GitLab 尚未授权。</span><button class="button secondary" id="settings-gitlab-logout" type="button" hidden>退出授权</button></div>
-        <label class="field">GitLab 实例地址<input id="settings-gitlab-url" type="url" placeholder="https://gitlab.example.com" maxlength="2048" required spellcheck="false"></label>
+        <label class="field">GitLab 实例或 OAuth 应用页面地址<input id="settings-gitlab-url" type="url" placeholder="https://gitlab.example.com" maxlength="2048" required spellcheck="false"></label>
         <div class="settings-instructions">
-          <p>在 GitLab 创建 OAuth 应用，将下方地址填到 Redirect URI，勾选 <code>read_api</code>。使用公开应用时，取消勾选 GitLab 的 Confidential。</p>
+          <p>在 GitLab 应用设置中，将下方地址填到「回调 URL」或 Redirect URI，范围勾选 <code>read_api</code>。</p>
           <label class="field" for="settings-gitlab-callback">OAuth 回调地址</label>
           <div class="settings-copy"><input id="settings-gitlab-callback" readonly><button class="button secondary" id="copy-gitlab-callback" type="button">复制地址</button><a class="button secondary" id="settings-gitlab-register" target="_blank" rel="noopener noreferrer">打开 GitLab 应用设置</a></div>
         </div>
-        <label class="field">OAuth 应用 ID<input id="settings-gitlab-client-id" placeholder="粘贴 GitLab 显示的 Application ID" maxlength="512" required autocomplete="off" spellcheck="false"></label>
-        <label class="settings-checkbox"><input id="settings-gitlab-confidential" type="checkbox"><span>使用保密应用</span></label>
+        <label class="field">应用程序 ID<input id="settings-gitlab-client-id" placeholder="复制 GitLab 的完整 Application ID" maxlength="512" required autocomplete="off" spellcheck="false"></label>
+        <div>
+          <label class="settings-checkbox"><input id="settings-gitlab-confidential" type="checkbox"><span>GitLab 应用已勾选「私密」（Confidential）</span></label>
+          <p class="settings-field-help">GitLab 的「私密」为「否」时，只填应用程序 ID 即可。</p>
+        </div>
         <div id="settings-gitlab-secret-fields" hidden>
-          <label class="field">Client Secret<input id="settings-gitlab-secret" type="password" maxlength="2048" autocomplete="new-password" spellcheck="false"></label>
+          <label class="field">密码（Client Secret）<input id="settings-gitlab-secret" type="password" maxlength="2048" autocomplete="new-password" spellcheck="false"></label>
           <p class="settings-field-help" id="settings-gitlab-secret-help"></p>
         </div>
         <p class="form-error" id="settings-gitlab-error" role="alert" hidden></p>
