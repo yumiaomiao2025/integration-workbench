@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { readConfig } from '../src/config.ts';
-import type { ConnectionStatus, LiveCapture, Task } from '../src/contracts.ts';
+import type { ConnectionStatus, EvidenceAnalysis, LiveCapture, Task } from '../src/contracts.ts';
 import { createWorkbench } from '../src/server.ts';
 import { availablePort, listen, stop, until } from './support.ts';
 
@@ -222,7 +222,17 @@ test('chooses among existing tabs and continuously collects and saves only selec
   const origin = `http://127.0.0.1:${port}`;
   const dataFile = join(data, 'tasks.json');
   const config = { ...readConfig(), port, origin, dataFile, chromeDataDir: join(data, 'default') };
-  const app = await createWorkbench(config);
+  const triage: EvidenceAnalysis = {
+    target: 'insufficient', summary: '需要更多证据',
+    findings: [{ index: 1, reason: '请求状态不能单独确定根因。' }],
+    nextSteps: ['核对后端的参数校验日志。'],
+  };
+  const analyses: string[][] = [];
+  const app = await createWorkbench(config, async (task, evidence) => {
+    assert.deepEqual(task.frontend[0].branches.map((branch) => branch.name), ['feature/orders', 'release/orders']);
+    analyses.push(evidence.map((entry) => entry.id));
+    return triage;
+  });
   await listen(app, port);
   t.after(async () => {
     await stop(app);
@@ -290,10 +300,20 @@ test('chooses among existing tabs and continuously collects and saves only selec
   const network = entries.find((entry) => entry.kind === 'network');
   assert.deepEqual(network && [network.url, network.status, network.duration], ['https://api.example.test/orders', 422, 150]);
   const selected = [network!.id];
+  const analysisPath = `/tasks/${task.id}/analysis`;
+  const analyze = (ids: string[], from = origin) => fetch(`${origin}/api${analysisPath}`, {
+    method: 'POST', headers: { Origin: from, 'Content-Type': 'application/json', Connection: 'close' },
+    body: JSON.stringify({ ids }),
+  });
+  assert.equal((await analyze(selected, otherUrl)).status, 403);
+  assert.equal((await analyze(selected)).status, 409);
+  assert.equal(analyses.length, 0);
   const saved = await request<Task>(`/tasks/${task.id}/evidence`, 'POST', { ids: selected });
   assert.deepEqual(saved.evidence.map((entry) => entry.id), selected);
   const retried = await request<Task>(`/tasks/${task.id}/evidence`, 'POST', { ids: selected });
   assert.equal(retried.evidence.length, 1);
+  assert.deepEqual(await request<EvidenceAnalysis>(analysisPath, 'POST', { ids: [...selected, ...selected] }), triage);
+  assert.deepEqual(analyses, [selected]);
 
   send('Target.targetInfoChanged', { targetInfo: target('second', `${new URL(targetUrl).origin}/orders/view/42`) });
   await until(async () => (await live()).capture.tab?.url.endsWith('/42') ? true : undefined);

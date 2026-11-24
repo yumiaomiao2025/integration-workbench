@@ -44,6 +44,13 @@ export type Task = TaskInput & {
   evidence: Evidence[];
 };
 
+export type EvidenceAnalysis = {
+  target: 'frontend' | 'backend' | 'insufficient';
+  summary: string;
+  findings: { index: number; reason: string }[];
+  nextSteps: string[];
+};
+
 export type CandidateTab = { id: string; title: string; url: string };
 
 export type ConnectionStatus = {

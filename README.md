@@ -36,6 +36,12 @@ pnpm start
 
 设置保存后立即生效，保存在任务文件同目录的 `settings.json`。保密应用的 Client Secret 在 Windows 上由当前用户加密保存，在其他平台保留在本次本机服务会话中。应用使用 OAuth 授权码和 PKCE，访问令牌保存在进程内存中，服务重启后需要重新授权。任务保存的仓库绑定包含 GitLab 实例，切换连接设置时，已有任务保留原来的仓库和选定分支。 [GitLab OAuth 应用](https://docs.gitlab.com/integration/oauth_provider/) · [GitLab PKCE 流程](https://docs.gitlab.com/api/oauth2/#authorization-code-with-proof-key-for-code-exchange-pkce)
 
+### 用 Claude Code 分析联调证据
+
+在运行工作台的用户账户下安装 Claude Code，并在终端用 `claude --version` 检查安装。工作台使用 Claude Code 当前的用户级模型配置，可以复用 CC Switch 切换的供应商。使用 CC Switch 路由模式时，分析期间需保持本机路由运行。
+
+在「请求」「控制台」或「已保存」中勾选记录，再点「AI 分析」。工作台会先保存临时记录，然后将这批证据及任务绑定的仓库和分支交给当前模型服务。页面会显示派发建议、对应的证据和下一步排查动作。分析结果显示在当前页面，证据保存在任务中。 [Claude Code CLI](https://code.claude.com/docs/en/cli-reference) · [CC Switch](https://github.com/farion1231/cc-switch)
+
 ## 添加模块
 
 | 目录 | 职责 |
@@ -43,6 +49,7 @@ pnpm start
 | `src/modules/gitlab` | 个人 GitLab 授权、仓库与分支查询 |
 | `src/modules/chrome` | 发现现有 Chrome、绑定标签页、采集并标准化事件 |
 | `src/modules/tasks` | 校验、保存、读取任务及选中的证据 |
+| `src/modules/analysis` | 通过本机 Claude Code 分析证据，校验派发建议 |
 | `src/modules/settings` | 读写本机连接设置，保护 OAuth 应用密钥 |
 | `src/contracts.ts` | 任务、连接状态和证据的数据格式 |
 | `src/server.ts` | 本机 HTTP 入口和 API 路由 |

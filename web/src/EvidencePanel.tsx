@@ -1,9 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
-import type { ConnectionStatus, Evidence, LiveCapture, Task } from '../../src/contracts.ts';
-import { explain } from './api.ts';
+import type { ConnectionStatus, Evidence, EvidenceAnalysis, LiveCapture, Task } from '../../src/contracts.ts';
+import { api, explain } from './api.ts';
 import { formatTime, Icon } from './ui.tsx';
 
 type View = 'network' | 'console' | 'saved';
+type AnalysisRun = { taskId: string } & (
+  { state: 'running' } | { state: 'failed'; message: string }
+  | { state: 'done'; result: EvidenceAnalysis; evidence: (Evidence | undefined)[] }
+);
 const views: { id: View; label: string; icon: 'network' | 'terminal' | 'bookmark' }[] = [
   { id: 'network', label: '请求', icon: 'network' },
   { id: 'console', label: '控制台', icon: 'terminal' },
@@ -34,6 +38,7 @@ export function EvidencePanel({ task, capture, connection, loading, onNew, onCon
   const [search, setSearch] = useState('');
   const [selection, setSelection] = useState<{ taskId?: string; ids: Set<string> }>();
   const [saving, setSaving] = useState(false);
+  const [analysis, setAnalysis] = useState<AnalysisRun>();
   const selectAll = useRef<HTMLInputElement>(null);
   const live = capture?.entries ?? noEntries;
   const selected = selection && selection.taskId === task?.id ? selection.ids : noSelection;
@@ -45,20 +50,22 @@ export function EvidencePanel({ task, capture, connection, loading, onNew, onCon
     saved: saved.toReversed(),
   };
   const entries = byView[view].filter((entry) => matches(entry, view, filter, search.trim().toLowerCase()));
-  const selectable = entries.filter((entry) => !savedIds.has(entry.id));
-  const selectedCount = selectable.filter((entry) => selected.has(entry.id)).length;
+  const selectedCount = entries.filter((entry) => selected.has(entry.id)).length;
+  const unsavedSelection = [...selected].filter((id) => !savedIds.has(id));
+  const analysisRunning = analysis?.state === 'running';
+  const currentAnalysis = analysis && analysis.taskId === task?.id ? analysis : undefined;
 
   useEffect(() => { setSelection(undefined); }, [task?.id]);
   useEffect(() => {
-    const available = new Set(live.map((entry) => entry.id));
     if (!capture || !selection || selection.taskId !== task?.id) return;
+    const available = new Set([...live, ...saved].map((entry) => entry.id));
     const valid = [...selection.ids].filter((id) => available.has(id));
     if (valid.length === selection.ids.size) return;
     setSelection({ taskId: task?.id, ids: new Set(valid) });
     notify(`${selection.ids.size - valid.length} 条所选记录已超出本机缓存。`, true);
-  }, [capture, live, selection, task?.id, notify]);
+  }, [capture, live, saved, selection, task?.id, notify]);
   useEffect(() => {
-    if (selectAll.current) selectAll.current.indeterminate = selectedCount > 0 && selectedCount < selectable.length;
+    if (selectAll.current) selectAll.current.indeterminate = selectedCount > 0 && selectedCount < entries.length;
   });
 
   function chooseView(next: View) {
@@ -79,8 +86,8 @@ export function EvidencePanel({ task, capture, connection, loading, onNew, onCon
   }
 
   async function save() {
-    if (!task || !selected.size || saving) return;
-    const ids = [...selected];
+    if (!task || !unsavedSelection.length || saving || analysisRunning) return;
+    const ids = unsavedSelection;
     setSaving(true);
     try {
       await onSave(task.id, ids);
@@ -94,13 +101,45 @@ export function EvidencePanel({ task, capture, connection, loading, onNew, onCon
     }
   }
 
+  async function analyze() {
+    if (!task || !selected.size || saving || analysisRunning) return;
+    const ids = [...selected];
+    const available = new Map([...live, ...saved].map((entry) => [entry.id, entry]));
+    const evidence = ids.map((id) => available.get(id));
+    const taskId = task.id;
+    setAnalysis({ taskId, state: 'running' });
+    try {
+      if (unsavedSelection.length) await onSave(taskId, unsavedSelection);
+    } catch (error) {
+      setAnalysis({ taskId, state: 'failed', message: `保存所选证据失败。 ${explain(error)}` });
+      return;
+    }
+    try {
+      const result = await api.analyzeEvidence(taskId, ids);
+      setAnalysis({ taskId, state: 'done', result, evidence });
+    } catch (error) {
+      setAnalysis({ taskId, state: 'failed', message: `所选证据已保存。 ${explain(error)}` });
+    }
+  }
+
   return <section className="card evidence-card" aria-labelledby="evidence-title">
     <div className="evidence-heading">
-      <div><h2 id="evidence-title">联调证据</h2><p>查看请求和日志，勾选需要保存到任务的记录。</p></div>
-      <button className="button primary" type="button" disabled={!selected.size || saving} onClick={() => void save()}>
-        <Icon name="bookmark" />{saving ? '保存中…' : selected.size ? `保存所选 (${selected.size})` : '保存所选'}
-      </button>
+      <div><h2 id="evidence-title">联调证据</h2><p id="analysis-scope">{task
+        ? 'AI 分析会将勾选的证据及关联仓库和分支发给 Claude Code 配置的模型服务。'
+        : '查看请求和日志，勾选需要保存到任务的记录。'}</p></div>
+      <div className="evidence-actions">
+        <button className="button secondary" type="button" disabled={!unsavedSelection.length || saving || analysisRunning} onClick={() => void save()}>
+          <Icon name="bookmark" />{saving ? '保存中…' : unsavedSelection.length ? `保存所选 (${unsavedSelection.length})` : '保存所选'}
+        </button>
+        {task && <button className="button primary" type="button" aria-describedby="analysis-scope"
+          disabled={!selected.size || saving || analysisRunning} onClick={() => void analyze()}>
+          {currentAnalysis?.state === 'running' ? '分析中…' : selected.size ? `AI 分析 (${selected.size})` : 'AI 分析'}
+        </button>}
+      </div>
     </div>
+    {currentAnalysis?.state === 'running' && <p className="analysis-status" role="status">正在保存所选证据并调用本机 Claude Code…</p>}
+    {currentAnalysis?.state === 'failed' && <p className="analysis-status error" role="alert">{currentAnalysis.message}</p>}
+    {currentAnalysis?.state === 'done' && <AnalysisResult result={currentAnalysis.result} evidence={currentAnalysis.evidence} />}
     <div className="evidence-toolbar">
       <div className="tabs" aria-label="记录类型">
         {views.map((option) => <button key={option.id} className={`evidence-tab${view === option.id ? ' active' : ''}`} type="button"
@@ -120,9 +159,10 @@ export function EvidencePanel({ task, capture, connection, loading, onNew, onCon
     </div>
     <div className="evidence-content">
       {entries.length ? <div className="table-wrap"><table><thead><tr>
-        {view === 'saved' ? <th>类型</th> : <th className="pick"><input ref={selectAll} type="checkbox" aria-label="选择当前筛选结果"
-          checked={selectable.length > 0 && selectedCount === selectable.length} disabled={!selectable.length}
-          onChange={(event) => toggle(selectable.map((entry) => entry.id), event.target.checked)} /></th>}
+        <th className="pick"><input ref={selectAll} type="checkbox" aria-label="选择当前筛选结果"
+          checked={selectedCount === entries.length}
+          onChange={(event) => toggle(entries.map((entry) => entry.id), event.target.checked)} /></th>
+        {view === 'saved' && <th>类型</th>}
         <th>时间</th><th>{view === 'network' ? '请求' : view === 'console' ? '消息' : '证据详情'}</th>
         <th>{view === 'network' ? '状态' : view === 'console' ? '级别' : '状态 / 级别'}</th>{view === 'network' && <th>耗时</th>}
       </tr></thead><tbody>
@@ -134,6 +174,25 @@ export function EvidencePanel({ task, capture, connection, loading, onNew, onCon
     <p className="evidence-footer">{view === 'saved' ? `已保存 ${saved.length} 条证据。`
       : entries.length ? `显示 ${entries.length} 条记录 · 本机临时记录最多保留 20 分钟。`
         : '本机临时记录保留最近 20 分钟，最多 400 条。'}</p>
+  </section>;
+}
+
+const triageLabels = { frontend: '建议派给前端', backend: '建议派给后端', insufficient: '需要更多证据' };
+
+function AnalysisResult({ result, evidence }: { result: EvidenceAnalysis; evidence: (Evidence | undefined)[] }) {
+  return <section className="analysis-result" aria-labelledby="analysis-title" aria-live="polite">
+    <h3 id="analysis-title">{triageLabels[result.target]}</h3>
+    <p>{result.summary}</p>
+    {result.findings.length > 0 && <ul>
+      {result.findings.map(({ index, reason }) => {
+        const entry = evidence[index - 1];
+        const label = entry?.kind === 'network' ? `${entry.method} ${entry.url}` : entry?.message || '控制台日志';
+        return <li key={index}><strong>{label}</strong><p>{reason}</p></li>;
+      })}
+    </ul>}
+    {result.nextSteps.length > 0 && <><h4>下一步排查</h4><ol>
+      {result.nextSteps.map((step, index) => <li key={index}>{step}</li>)}
+    </ol></>}
   </section>;
 }
 
@@ -160,10 +219,11 @@ function EvidenceRow({ entry, view, saved, checked, toggle }: {
   const color = network ? entry.error || status >= 400 ? 'bad' : status >= 200 && status < 300 ? 'good' : ''
     : ['error', 'assert'].includes(entry.level) ? 'bad' : ['warning', 'warn'].includes(entry.level) ? 'warn' : '';
   return <tr>
-    {view === 'saved' ? <td>{network ? '请求' : '控制台'}</td> : <td className="pick">
-      {saved ? <span className="entry-saved" title="已保存" aria-label="已保存"><Icon name="check" /></span>
-        : <input type="checkbox" aria-label={network ? '选择请求' : '选择日志'} checked={checked} onChange={(event) => toggle(event.target.checked)} />}
-    </td>}
+    <td className="pick"><span className="pick-controls">
+      <input type="checkbox" aria-label={network ? '选择请求' : '选择日志'} checked={checked} onChange={(event) => toggle(event.target.checked)} />
+      {saved && view !== 'saved' && <span className="entry-saved" title="已保存" aria-label="已保存"><Icon name="check" /></span>}
+    </span></td>
+    {view === 'saved' && <td>{network ? '请求' : '控制台'}</td>}
     <td className="when" title={entry.at}>{formatTime(entry.at)}</td>
     <td><details><summary>{summary}</summary><div className="entry-detail">{body}</div></details></td>
     <td><span className={`record-pill ${color}`}>{badge}</span></td>

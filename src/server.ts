@@ -4,6 +4,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { extname, join } from 'node:path';
 import { readConfig, settingsPath } from './config.ts';
 import { HttpError, readJson, sendJson } from './http.ts';
+import { analyzeWithClaude, type EvidenceAnalyzer } from './modules/analysis/index.ts';
 import { ChromeCollector } from './modules/chrome/index.ts';
 import { checkChromeEndpoint } from './modules/chrome/cdp.ts';
 import { GitLab } from './modules/gitlab/index.ts';
@@ -19,20 +20,21 @@ const assetTypes = new Map([
   ['.woff2', 'font/woff2'],
 ]);
 
-export async function createWorkbench(config: Config) {
-  const workbench = await createWorkbenchHandler(config);
+export async function createWorkbench(config: Config, analyze?: EvidenceAnalyzer) {
+  const workbench = await createWorkbenchHandler(config, analyze);
   const server = createServer(workbench.handle);
   server.on('close', workbench.close);
   return server;
 }
 
-export async function createWorkbenchHandler(config: Config) {
+export async function createWorkbenchHandler(config: Config, analyze: EvidenceAnalyzer = analyzeWithClaude) {
   const settings = await SettingsStore.open(settingsPath(config.dataFile), config);
   let gitlabConfig = settings.gitlab();
   const store = await TaskStore.open(config.dataFile, gitlabConfig.baseUrl);
   let gitlab = new GitLab(gitlabConfig);
   const chrome = new ChromeCollector(settings.chromeDataDir());
   const expectedHost = new URL(config.origin).host;
+  let analysisRunning = false;
 
   async function route(request: IncomingMessage, response: ServerResponse) {
     setHeaders(response);
@@ -118,7 +120,7 @@ export async function createWorkbenchHandler(config: Config) {
       chrome.activate(task);
       return sendJson(response, task, 201);
     }
-    const taskPath = /^\/api\/tasks\/([\da-f-]{36})(?:\/(activate|live|tab|evidence))?$/.exec(path);
+    const taskPath = /^\/api\/tasks\/([\da-f-]{36})(?:\/(activate|live|tab|evidence|analysis))?$/.exec(path);
     if (taskPath) {
       const [, id, action] = taskPath;
       const task = store.get(id);
@@ -147,13 +149,32 @@ export async function createWorkbenchHandler(config: Config) {
         return sendJson(response, chrome.live(id), 202);
       }
       if (method === 'POST' && action === 'evidence') {
-        const value = await readJson(request) as { ids?: unknown } | null;
-        if (!Array.isArray(value?.ids) || value.ids.length < 1 || value.ids.length > 400
-          || !value.ids.every((entry) => typeof entry === 'string' && /^[\da-f-]{36}$/.test(entry))) {
-          throw new HttpError(400, '请选择要保存的请求或日志。');
-        }
-        const selected = chrome.selected(id, [...new Set<string>(value.ids)], task.evidence);
+        const ids = evidenceIds(await readJson(request));
+        const selected = chrome.selected(id, ids, store.get(id).evidence);
         return sendJson(response, await store.saveEvidence(id, selected));
+      }
+      if (method === 'POST' && action === 'analysis') {
+        const ids = evidenceIds(await readJson(request));
+        if (analysisRunning) throw new HttpError(409, '已有一批证据在分析，请等它完成后再试。');
+        const current = store.get(id);
+        const saved = new Map(current.evidence.map((entry) => [entry.id, entry]));
+        const selected = ids.map((entryId) => {
+          const entry = saved.get(entryId);
+          if (!entry) throw new HttpError(409, '有选中的证据尚未保存，请保存后重试。');
+          return entry;
+        });
+        const controller = new AbortController();
+        const cancel = () => controller.abort();
+        response.once('close', cancel);
+        analysisRunning = true;
+        try {
+          const result = await analyze(current, selected, controller.signal);
+          if (!controller.signal.aborted) sendJson(response, result);
+        } finally {
+          response.off('close', cancel);
+          analysisRunning = false;
+        }
+        return;
       }
     }
     throw new HttpError(404, '页面或接口不存在。');
@@ -161,6 +182,7 @@ export async function createWorkbenchHandler(config: Config) {
 
   function handle(request: IncomingMessage, response: ServerResponse) {
     void route(request, response).catch((error: unknown) => {
+      if (response.destroyed) return;
       if (response.headersSent) return response.destroy();
       if (error instanceof HttpError) sendJson(response, { error: error.message }, error.status);
       else {
@@ -170,6 +192,15 @@ export async function createWorkbenchHandler(config: Config) {
     });
   }
   return { handle, close: () => chrome.disconnect() };
+}
+
+function evidenceIds(value: unknown) {
+  const ids = (value as { ids?: unknown } | null)?.ids;
+  if (!Array.isArray(ids) || ids.length < 1 || ids.length > 400
+    || !ids.every((entry) => typeof entry === 'string' && /^[\da-f-]{36}$/.test(entry))) {
+    throw new HttpError(400, '请选择 1 至 400 条请求或日志。');
+  }
+  return [...new Set<string>(ids)];
 }
 
 function setHeaders(response: ServerResponse) {
