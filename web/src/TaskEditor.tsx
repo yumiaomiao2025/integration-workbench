@@ -40,11 +40,11 @@ export function TaskEditor({ task, gitlab, onClose, onSettings, onSaved }: {
     }
   }
 
-  return <Dialog id="task-dialog" title={task ? '编辑工作区' : '新建工作区'}
-    description="填写工作区名称和测试网址。仓库与分支可以稍后补充。" onClose={onClose} initialFocus="#editor-name">
+  return <Dialog id="task-dialog" title={task ? '编辑任务' : '新建任务'}
+    description="填写任务名称和测试网址。仓库与分支可以稍后补充。" onClose={onClose} initialFocus="#editor-name">
     <form onSubmit={(event) => void submit(event)}>
       <div className="dialog-body">
-        <label className="field">工作区名称<input id="editor-name" placeholder="例如：订单提交联调" required maxLength={100} autoComplete="off"
+        <label className="field">任务名称<input id="editor-name" placeholder="例如：订单提交联调" required maxLength={100} autoComplete="off"
           value={title} onChange={(event) => setTitle(event.target.value)} /></label>
         <label className="field">测试网址<input type="url" placeholder="https://test.example.com/orders" required maxLength={2048} autoComplete="off"
           value={url} onChange={(event) => setUrl(event.target.value)} /></label>
@@ -62,7 +62,7 @@ export function TaskEditor({ task, gitlab, onClose, onSettings, onSaved }: {
       </div>
       <footer className="dialog-footer">
         <button className="button secondary" type="button" onClick={onClose}>取消</button>
-        <button className="button primary" type="submit" disabled={saving}>{saving ? '保存中…' : '保存工作区'}</button>
+        <button className="button primary" type="submit" disabled={saving}>{saving ? '保存中…' : '保存任务'}</button>
       </footer>
     </form>
   </Dialog>;

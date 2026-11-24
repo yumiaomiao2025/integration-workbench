@@ -1,13 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import type { ConnectionStatus, Evidence, EvidenceAnalysis, LiveCapture, Task } from '../../src/contracts.ts';
-import { api, explain } from './api.ts';
+import type { ConnectionStatus, Evidence, LiveCapture, Task } from '../../src/contracts.ts';
+import { AgentDialog, type AgentLaunch } from './AgentDialog.tsx';
+import { explain } from './api.ts';
 import { formatTime, Icon } from './ui.tsx';
 
 type View = 'network' | 'console' | 'saved';
-type AnalysisRun = { taskId: string } & (
-  { state: 'running' } | { state: 'failed'; message: string }
-  | { state: 'done'; result: EvidenceAnalysis; evidence: (Evidence | undefined)[] }
-);
 const views: { id: View; label: string; icon: 'network' | 'terminal' | 'bookmark' }[] = [
   { id: 'network', label: '请求', icon: 'network' },
   { id: 'console', label: '控制台', icon: 'terminal' },
@@ -23,11 +20,13 @@ const consoleFilters: Record<string, string[]> = { error: ['error', 'assert'], w
 const noEntries: Evidence[] = [];
 const noSelection: ReadonlySet<string> = new Set();
 
-export function EvidencePanel({ task, capture, connection, loading, onNew, onConnect, onSave, notify }: {
+export function EvidencePanel({ task, capture, connection, loading, agent, onAgent, onNew, onConnect, onSave, notify }: {
   task: Task | null;
   capture: LiveCapture | null;
   connection: ConnectionStatus;
   loading: boolean;
+  agent: AgentLaunch | null;
+  onAgent: (launch: AgentLaunch | null) => void;
   onNew: () => void;
   onConnect: () => void;
   onSave: (taskId: string, ids: string[]) => Promise<void>;
@@ -38,7 +37,6 @@ export function EvidencePanel({ task, capture, connection, loading, onNew, onCon
   const [search, setSearch] = useState('');
   const [selection, setSelection] = useState<{ taskId?: string; ids: Set<string> }>();
   const [saving, setSaving] = useState(false);
-  const [analysis, setAnalysis] = useState<AnalysisRun>();
   const selectAll = useRef<HTMLInputElement>(null);
   const live = capture?.entries ?? noEntries;
   const selected = selection && selection.taskId === task?.id ? selection.ids : noSelection;
@@ -52,8 +50,6 @@ export function EvidencePanel({ task, capture, connection, loading, onNew, onCon
   const entries = byView[view].filter((entry) => matches(entry, view, filter, search.trim().toLowerCase()));
   const selectedCount = entries.filter((entry) => selected.has(entry.id)).length;
   const unsavedSelection = [...selected].filter((id) => !savedIds.has(id));
-  const analysisRunning = analysis?.state === 'running';
-  const currentAnalysis = analysis && analysis.taskId === task?.id ? analysis : undefined;
 
   useEffect(() => { setSelection(undefined); }, [task?.id]);
   useEffect(() => {
@@ -86,7 +82,7 @@ export function EvidencePanel({ task, capture, connection, loading, onNew, onCon
   }
 
   async function save() {
-    if (!task || !unsavedSelection.length || saving || analysisRunning) return;
+    if (!task || !unsavedSelection.length || saving) return;
     const ids = unsavedSelection;
     setSaving(true);
     try {
@@ -101,45 +97,19 @@ export function EvidencePanel({ task, capture, connection, loading, onNew, onCon
     }
   }
 
-  async function analyze() {
-    if (!task || !selected.size || saving || analysisRunning) return;
-    const ids = [...selected];
-    const available = new Map([...live, ...saved].map((entry) => [entry.id, entry]));
-    const evidence = ids.map((id) => available.get(id));
-    const taskId = task.id;
-    setAnalysis({ taskId, state: 'running' });
-    try {
-      if (unsavedSelection.length) await onSave(taskId, unsavedSelection);
-    } catch (error) {
-      setAnalysis({ taskId, state: 'failed', message: `保存所选证据失败。 ${explain(error)}` });
-      return;
-    }
-    try {
-      const result = await api.analyzeEvidence(taskId, ids);
-      setAnalysis({ taskId, state: 'done', result, evidence });
-    } catch (error) {
-      setAnalysis({ taskId, state: 'failed', message: `所选证据已保存。 ${explain(error)}` });
-    }
-  }
-
   return <section className="card evidence-card" aria-labelledby="evidence-title">
     <div className="evidence-heading">
-      <div><h2 id="evidence-title">联调证据</h2><p id="analysis-scope">{task
-        ? 'AI 分析会将勾选的证据及关联仓库和分支发给 Claude Code 配置的模型服务。'
-        : '查看请求和日志，勾选需要保存到工作区的记录。'}</p></div>
+      <div><h2 id="evidence-title">联调证据</h2><p>查看已连接页面的请求和日志。</p></div>
       <div className="evidence-actions">
-        <button className="button secondary" type="button" disabled={!unsavedSelection.length || saving || analysisRunning} onClick={() => void save()}>
+        <button className="button secondary" type="button" disabled={!unsavedSelection.length || saving} onClick={() => void save()}>
           <Icon name="bookmark" />{saving ? '保存中…' : unsavedSelection.length ? `保存所选 (${unsavedSelection.length})` : '保存所选'}
         </button>
-        {task && <button className="button primary" type="button" aria-describedby="analysis-scope"
-          disabled={!selected.size || saving || analysisRunning} onClick={() => void analyze()}>
-          {currentAnalysis?.state === 'running' ? '分析中…' : selected.size ? `AI 分析 (${selected.size})` : 'AI 分析'}
+        {task && <button className="button secondary" type="button" aria-haspopup="dialog"
+          onClick={() => onAgent({ taskId: task.id, ids: [...selected] })}>
+          {selected.size ? `AI 分析 (${selected.size})` : 'AI 分析'}
         </button>}
       </div>
     </div>
-    {currentAnalysis?.state === 'running' && <p className="analysis-status" role="status">正在保存所选证据并调用本机 Claude Code…</p>}
-    {currentAnalysis?.state === 'failed' && <p className="analysis-status error" role="alert">{currentAnalysis.message}</p>}
-    {currentAnalysis?.state === 'done' && <AnalysisResult result={currentAnalysis.result} evidence={currentAnalysis.evidence} />}
     <div className="evidence-toolbar">
       <div className="tabs" aria-label="记录类型">
         {views.map((option) => <button key={option.id} className={`evidence-tab${view === option.id ? ' active' : ''}`} type="button"
@@ -174,25 +144,7 @@ export function EvidencePanel({ task, capture, connection, loading, onNew, onCon
     <p className="evidence-footer">{view === 'saved' ? `已保存 ${saved.length} 条证据。`
       : entries.length ? `显示 ${entries.length} 条记录 · 本机临时记录最多保留 20 分钟。`
         : '本机临时记录保留最近 20 分钟，最多 400 条。'}</p>
-  </section>;
-}
-
-const triageLabels = { frontend: '建议派给前端', backend: '建议派给后端', insufficient: '需要更多证据' };
-
-function AnalysisResult({ result, evidence }: { result: EvidenceAnalysis; evidence: (Evidence | undefined)[] }) {
-  return <section className="analysis-result" aria-labelledby="analysis-title" aria-live="polite">
-    <h3 id="analysis-title">{triageLabels[result.target]}</h3>
-    <p>{result.summary}</p>
-    {result.findings.length > 0 && <ul>
-      {result.findings.map(({ index, reason }) => {
-        const entry = evidence[index - 1];
-        const label = entry?.kind === 'network' ? `${entry.method} ${entry.url}` : entry?.message || '控制台日志';
-        return <li key={index}><strong>{label}</strong><p>{reason}</p></li>;
-      })}
-    </ul>}
-    {result.nextSteps.length > 0 && <><h4>下一步排查</h4><ol>
-      {result.nextSteps.map((step, index) => <li key={index}>{step}</li>)}
-    </ol></>}
+    {task && <AgentDialog task={task} live={live} launch={agent} onClose={() => onAgent(null)} onSave={onSave} />}
   </section>;
 }
 
@@ -205,7 +157,7 @@ function matches(entry: Evidence, view: View, filter: string, query: string) {
   if (view === 'saved' && filter !== 'all' && entry.kind !== filter) return false;
   const content = entry.kind === 'network' ? `${entry.method} ${entry.url} ${entry.status ?? ''} ${entry.error}`
     : `${entry.message} ${entry.source} ${entry.level}`;
-  return content.toLowerCase().includes(query);
+  return `${content} ${entry.page?.title ?? ''} ${entry.page?.url ?? ''}`.toLowerCase().includes(query);
 }
 
 function EvidenceRow({ entry, view, saved, checked, toggle }: {
@@ -225,7 +177,10 @@ function EvidenceRow({ entry, view, saved, checked, toggle }: {
     </span></td>
     {view === 'saved' && <td>{network ? '请求' : '控制台'}</td>}
     <td className="when" title={entry.at}>{formatTime(entry.at)}</td>
-    <td><details><summary>{summary}</summary><div className="entry-detail">{body}</div></details></td>
+    <td><details><summary>{summary}</summary>
+      {entry.page && <div className="entry-detail" title={entry.page.url}>页面 {entry.page.title || entry.page.url}</div>}
+      <div className="entry-detail">{body}</div>
+    </details></td>
     <td><span className={`record-pill ${color}`}>{badge}</span></td>
     {view === 'network' && entry.kind === 'network' && <td className="duration">{entry.duration} ms</td>}
   </tr>;
@@ -236,12 +191,12 @@ function EmptyEvidence({ view, loading, total, task, capture, connection, onNew,
   onNew: () => void; onConnect: () => void;
 }) {
   let title = '等待绑定测试标签页';
-  let description = '请在现有 Chrome 中打开此工作区的测试网址。';
+  let description = '请在现有 Chrome 中打开此任务的测试网址。';
   let action: { label: string; icon: 'plus' | 'link'; onClick: () => void } | undefined;
-  if (loading) [title, description] = ['正在加载工作区', '加载完成后可查看联调记录。'];
+  if (loading) [title, description] = ['正在加载任务', '加载完成后可查看联调记录。'];
   else if (!task) {
-    [title, description] = ['还没有工作区', '新建工作区并填写测试网址，工作台会匹配已打开的 Chrome 标签页。'];
-    action = { label: '新建工作区', icon: 'plus', onClick: onNew };
+    [title, description] = ['还没有任务', '新建任务并填写测试网址，工作台会匹配已打开的 Chrome 标签页。'];
+    action = { label: '新建任务', icon: 'plus', onClick: onNew };
   } else if (total) [title, description] = ['没有符合筛选条件的记录', '可以修改关键词或切换筛选条件。'];
   else if (view === 'saved') [title, description] = ['还没有保存证据', '在请求或控制台中勾选记录，点击「保存所选」。'];
   else if (['idle', 'error', 'disconnected'].includes(connection.state)) {

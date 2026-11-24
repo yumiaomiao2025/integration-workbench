@@ -1,4 +1,4 @@
-import type { ConnectionStatus, EvidenceAnalysis, LiveCapture, Task, TaskInput } from '../../src/contracts.ts';
+import type { AnalysisMessage, ConnectionStatus, EvidenceAnalysis, LiveCapture, Task, TaskInput } from '../../src/contracts.ts';
 
 export type TaskSummary = Omit<Task, 'evidence'> & { evidenceCount: number };
 export type GitLabStatus = {
@@ -55,8 +55,11 @@ export const api = {
   task: (id: string, signal?: AbortSignal) => json<Task>(`/tasks/${id}`, { signal }),
   saveTask: (id: string | undefined, body: TaskInput) => json<Task>(id ? `/tasks/${id}` : '/tasks', { method: id ? 'PUT' : 'POST', body }),
   saveEvidence: (id: string, ids: string[]) => json<Task>(`/tasks/${id}/evidence`, { method: 'POST', body: { ids } }),
-  analyzeEvidence: (id: string, ids: string[]) => json<EvidenceAnalysis>(`/tasks/${id}/analysis`, { method: 'POST', body: { ids } }),
-  chooseTab: (id: string, tabId: string) => json<LiveCapture>(`/tasks/${id}/tab`, { method: 'POST', body: { tabId } }),
+  analyzeEvidence: (id: string, ids: string[], messages: AnalysisMessage[]) =>
+    json<EvidenceAnalysis>(`/tasks/${id}/analysis`, { method: 'POST', body: { ids, messages } }),
+  checkClaude: (signal: AbortSignal) => json<{ elapsedMs: number }>('/claude/check', { method: 'POST', signal }),
+  changeTab: (id: string, tabId: string, method: 'POST' | 'DELETE') =>
+    json<LiveCapture>(`/tasks/${id}/tab`, { method, body: { tabId } }),
   async live(id: string, etag: string, signal: AbortSignal) {
     const response = await request(`/tasks/${id}/live`, { etag, signal });
     if (response.status === 304) return null;

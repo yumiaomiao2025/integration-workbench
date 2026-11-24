@@ -65,7 +65,7 @@ test('collects two tabs in one Chrome instance and keeps listening after navigat
 
   collector.connect();
   await until(async () => collector.live().state === 'attached' ? true : undefined);
-  assert.equal(collector.live().tab?.id, tab.targetId);
+  assert.equal(collector.live().tabs[0]?.id, tab.targetId);
   assert.equal(await getPageSession(), pageSession);
   await devtools.send('Runtime.evaluate', { expression: 'document.querySelector("#run").click()' }, sessionId);
   const entries = await until(async () => {
@@ -77,16 +77,24 @@ test('collects two tabs in one Chrome instance and keeps listening after navigat
 
   const { targetId: secondaryTarget } = await devtools.send('Target.createTarget', { url: secondaryUrl });
   secondary.connect();
-  await until(async () => secondary.live().tab?.id === secondaryTarget ? true : undefined);
+  await until(async () => secondary.live().tabs[0]?.id === secondaryTarget ? true : undefined);
   const { sessionId: secondarySession } = await devtools.send('Target.attachToTarget', { targetId: secondaryTarget, flatten: true });
   await devtools.send('Runtime.evaluate', { expression: 'console.error("secondary workspace only")' }, secondarySession);
   await until(async () => secondary.live().entries.some((entry) => entry.kind === 'console' && entry.message === 'secondary workspace only') ? true : undefined);
   assert.doesNotMatch(JSON.stringify(collector.live().entries), /secondary workspace only/);
   secondary.disconnect();
-  assert.equal(collector.live().tab?.id, tab.targetId);
+  assert.equal(collector.live().tabs[0]?.id, tab.targetId);
+  collector.choose(secondaryTarget);
+  await until(async () => collector.live().tabs.length === 2 ? true : undefined);
+  await devtools.send('Runtime.evaluate', { expression: 'console.error("second page in same task")' }, secondarySession);
+  const fromSecondPage = await until(async () => collector.live().entries.find((entry) =>
+    entry.kind === 'console' && entry.message === 'second page in same task'));
+  assert.equal(fromSecondPage.page?.url, secondaryUrl);
+  collector.remove(secondaryTarget);
+  assert.deepEqual(collector.live().tabs.map(({ id }) => id), [tab.targetId]);
 
   await devtools.send('Page.navigate', { url: `${origin}/orders/details` }, sessionId);
-  await until(async () => collector.live().tab?.url.endsWith('/details') ? true : undefined);
+  await until(async () => collector.live().tabs[0]?.url.endsWith('/details') ? true : undefined);
   await until(async () => {
     const current = await getPageSession();
     return current && current !== pageSession ? true : undefined;

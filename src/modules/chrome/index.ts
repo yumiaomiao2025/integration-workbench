@@ -2,17 +2,17 @@ import type { Protocol } from 'devtools-protocol';
 import type { CandidateTab, ConnectionStatus, Evidence, LiveCapture } from '../../contracts.ts';
 import { HttpError } from '../../http.ts';
 import { CdpConnection, chromeEndpoint, type CdpEvent } from './cdp.ts';
-import { cleanUrl, EvidenceCollector } from './evidence.ts';
+import { cleanUrl, EvidenceCollector, safeText } from './evidence.ts';
 
 type Target = Protocol.Target.TargetInfo;
-type Binding = { targetId: string; sessionId: string; started: number; collector: EvidenceCollector; ready: boolean };
-type Attempt = { targetId: string };
+type Binding = { sessionId: string; origin: string; started: number; collector: EvidenceCollector; ready: boolean };
 const maxEntries = 400;
 const retentionMs = 20 * 60_000;
 
 export class ChromeCollector {
   private dataDir: string;
   private url: string;
+  private ignoredOrigin?: string;
   private client?: CdpConnection;
   private connecting?: AbortController;
   private heartbeat?: NodeJS.Timeout;
@@ -20,15 +20,16 @@ export class ChromeCollector {
   private message = '';
   private targets = new Map<string, Target>();
   private entries: Evidence[] = [];
-  private binding?: Binding;
-  private attempting?: Attempt;
-  private failedTarget?: string;
-  private preferredTarget?: string;
+  private bindings = new Map<string, Binding>();
+  private attempts = new Map<string, symbol>();
+  private failedTargets = new Set<string>();
+  private removedTargets = new Set<string>();
   private revision = 0;
 
-  constructor(dataDir: string, url: string) {
+  constructor(dataDir: string, url: string, ignoredOrigin?: string) {
     this.dataDir = dataDir;
     this.url = url;
+    this.ignoredOrigin = ignoredOrigin;
   }
 
   status(): ConnectionStatus {
@@ -43,9 +44,9 @@ export class ChromeCollector {
     if (this.url === url) return;
     this.url = url;
     this.entries = [];
-    this.release();
-    this.failedTarget = undefined;
-    this.preferredTarget = undefined;
+    for (const targetId of new Set([...this.bindings.keys(), ...this.attempts.keys()])) this.release(targetId);
+    this.failedTargets.clear();
+    this.removedTargets.clear();
     this.reconcile();
   }
 
@@ -71,30 +72,40 @@ export class ChromeCollector {
 
   choose(targetId: string) {
     const target = this.targets.get(targetId);
-    if (this.state !== 'connected' || !target || !matches(target.url, this.url)) {
-      throw new HttpError(409, '这个标签页已离开测试网址，请从当前列表重新选择。');
+    const url = target && this.pageUrl(target);
+    if (this.state !== 'connected' || !this.client || !url) {
+      throw new HttpError(409, '此页面已无法接入，请从当前列表重新选择。');
     }
-    if (this.binding?.targetId === targetId && this.binding.ready) return;
-    this.release();
-    this.failedTarget = undefined;
-    this.preferredTarget = targetId;
+    if (this.bindings.has(targetId) || this.attempts.has(targetId)) return;
+    this.failedTargets.delete(targetId);
+    this.removedTargets.delete(targetId);
+    void this.attach(this.client, url.origin, targetId);
+  }
+
+  remove(targetId: string) {
+    if (!this.bindings.has(targetId) && !this.attempts.has(targetId)) return;
+    this.removedTargets.add(targetId);
+    this.release(targetId);
     this.reconcile();
   }
 
   live(): LiveCapture {
-    const candidates = this.state === 'connected' ? this.candidates().map(toTab) : [];
-    const target = this.binding?.ready ? this.targets.get(this.binding.targetId) : undefined;
-    const choose = !target && !this.attempting && (candidates.length > 1 || Boolean(this.failedTarget && candidates.length));
+    const available = this.state === 'connected' ? this.candidates() : [];
+    const tabs = [...this.bindings].flatMap(([id, binding]) => {
+      const target = this.targets.get(id);
+      return target && binding.ready ? [{ ...toTab(target), startedAt: new Date(binding.started).toISOString() }] : [];
+    });
+    const choose = !tabs.length && !this.attempts.size && available.length > 0;
     const entries = this.recent();
     return {
       revision: this.revision,
-      state: target ? 'attached' : choose ? 'choose' : 'waiting',
-      message: this.attempting ? '正在接入标签页…'
-        : choose ? '选择一个已打开的测试标签页。'
-        : this.state === 'connected' && !target ? '等待 Chrome 打开匹配的测试网址。' : '',
-      startedAt: target && this.binding ? new Date(this.binding.started).toISOString() : null,
-      tab: target ? toTab(target) : null,
-      candidates,
+      state: tabs.length ? 'attached' : choose ? 'choose' : 'waiting',
+      message: this.attempts.size ? '正在接入页面…'
+        : this.failedTargets.size ? '有页面接入失败，可以重新选择。'
+        : choose ? '从已打开的页面中选择要接入的页面。'
+        : this.state === 'connected' && !tabs.length ? '等待 Chrome 打开页面。' : '',
+      tabs,
+      candidates: available.map(toTab),
       entries,
     };
   }
@@ -148,26 +159,38 @@ export class ChromeCollector {
   private resetConnection() {
     clearInterval(this.heartbeat);
     this.client = undefined;
-    this.binding = undefined;
-    this.attempting = undefined;
-    this.failedTarget = undefined;
-    this.preferredTarget = undefined;
+    this.bindings.clear();
+    this.attempts.clear();
+    this.failedTargets.clear();
+    this.removedTargets.clear();
     this.targets.clear();
     this.revision++;
   }
 
-  private release() {
-    const binding = this.binding;
-    this.binding = undefined;
-    this.attempting = undefined;
+  private release(targetId: string) {
+    const binding = this.bindings.get(targetId);
+    this.bindings.delete(targetId);
+    this.attempts.delete(targetId);
     if (binding) void this.client?.send('Target.detachFromTarget', { sessionId: binding.sessionId }).catch(() => {});
     this.revision++;
   }
 
   private event(client: CdpConnection, event: CdpEvent) {
     if (client !== this.client) return;
+    if (event.method === 'Target.detachedFromTarget') {
+      for (const [id, binding] of this.bindings) {
+        if (binding.sessionId !== event.params.sessionId) continue;
+        this.failedTargets.add(id);
+        this.release(id);
+        this.reconcile();
+        break;
+      }
+      return;
+    }
     if (event.sessionId) {
-      if (this.binding?.sessionId === event.sessionId) this.binding.collector.handle(event);
+      for (const binding of this.bindings.values()) {
+        if (binding.sessionId === event.sessionId) { binding.collector.handle(event); break; }
+      }
       return;
     }
     switch (event.method) {
@@ -181,12 +204,10 @@ export class ChromeCollector {
         break;
       }
       case 'Target.targetDestroyed':
-        if (this.targets.delete(event.params.targetId)) this.reconcile();
-        break;
-      case 'Target.detachedFromTarget':
-        if (this.binding?.sessionId === event.params.sessionId) {
-          this.failedTarget = this.binding.targetId;
-          this.release();
+        if (this.targets.delete(event.params.targetId)) {
+          this.release(event.params.targetId);
+          this.failedTargets.delete(event.params.targetId);
+          this.removedTargets.delete(event.params.targetId);
           this.reconcile();
         }
         break;
@@ -194,51 +215,60 @@ export class ChromeCollector {
   }
 
   private candidates() {
-    return [...this.targets.values()].filter((target) => matches(target.url, this.url));
+    return [...this.targets.values()].filter((target) =>
+      !this.bindings.has(target.targetId) && !this.attempts.has(target.targetId) && this.pageUrl(target));
+  }
+
+  private pageUrl(target: Target) {
+    const url = URL.parse(target.url);
+    return url && ['http:', 'https:'].includes(url.protocol) && url.origin !== this.ignoredOrigin ? url : null;
   }
 
   private reconcile() {
     this.revision++;
     const client = this.client;
     if (!client || this.state !== 'connected') return;
-    const attached = this.binding && this.targets.get(this.binding.targetId);
-    const origin = new URL(this.url).origin;
-    if (attached && URL.parse(attached.url)?.origin === origin) return;
-    if (this.binding) this.release();
-    if (this.attempting) return;
-    const candidates = this.candidates();
-    const preferred = candidates.find((target) => target.targetId === this.preferredTarget);
-    const target = preferred || (candidates.length === 1 ? candidates[0] : undefined);
-    if (target && target.targetId !== this.failedTarget) void this.attach(client, origin, target.targetId);
+    for (const [id, binding] of this.bindings) {
+      const target = this.targets.get(id);
+      if (!target || this.pageUrl(target)?.origin !== binding.origin) this.release(id);
+    }
+    if (this.bindings.size || this.attempts.size) return;
+    const candidates = this.candidates().filter((target) => matches(target.url, this.url) && !this.removedTargets.has(target.targetId));
+    const target = candidates.length === 1 ? candidates[0] : undefined;
+    if (target && !this.failedTargets.has(target.targetId)) void this.attach(client, new URL(this.url).origin, target.targetId);
   }
 
   private async attach(client: CdpConnection, origin: string, targetId: string) {
-    const attempt = { targetId };
-    this.attempting = attempt;
+    const attempt = Symbol();
+    this.attempts.set(targetId, attempt);
     this.revision++;
     try {
       const { sessionId } = await client.send('Target.attachToTarget', { targetId, flatten: true });
       const target = this.targets.get(targetId);
-      if (this.attempting !== attempt || !target || URL.parse(target.url)?.origin !== origin) {
+      if (this.attempts.get(targetId) !== attempt || !target || this.pageUrl(target)?.origin !== origin) {
         void client.send('Target.detachFromTarget', { sessionId }).catch(() => {});
         return;
       }
       const started = Date.now();
-      const collector = new EvidenceCollector(origin, started, (entry) => this.record(entry));
-      this.binding = { targetId, sessionId, started, collector, ready: false };
+      const collector = new EvidenceCollector(origin, started, (entry) => {
+        const current = this.targets.get(targetId);
+        if (current) this.record({ ...entry, page: { title: safeText(current.title, 200), url: cleanUrl(current.url) } });
+      });
+      const binding = { sessionId, origin, started, collector, ready: false };
+      this.bindings.set(targetId, binding);
       await Promise.all([
         client.send('Network.enable', { maxPostDataSize: 0 }, sessionId),
         client.send('Runtime.enable', undefined, sessionId),
         client.send('Log.enable', undefined, sessionId).catch(() => {}),
       ]);
-      if (this.binding?.sessionId === sessionId) this.binding.ready = true;
+      binding.ready = true;
     } catch {
-      if (this.attempting !== attempt) return;
-      this.failedTarget = targetId;
-      this.release();
+      if (this.attempts.get(targetId) !== attempt) return;
+      this.failedTargets.add(targetId);
+      this.release(targetId);
     } finally {
-      if (this.attempting === attempt) {
-        this.attempting = undefined;
+      if (this.attempts.get(targetId) === attempt) {
+        this.attempts.delete(targetId);
         this.reconcile();
       }
     }

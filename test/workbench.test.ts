@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { readConfig } from '../src/config.ts';
-import type { ConnectionStatus, EvidenceAnalysis, LiveCapture, Task } from '../src/contracts.ts';
+import type { AnalysisMessage, ConnectionStatus, EvidenceAnalysis, LiveCapture, Task } from '../src/contracts.ts';
 import { createWorkbench } from '../src/server.ts';
 import { availablePort, listen, stop, until } from './support.ts';
 
@@ -196,7 +196,9 @@ test('keeps Chrome bindings and evidence isolated across concurrent workspaces',
   const targetUrl = 'https://test.example.test/orders';
   const otherUrl = 'https://unrelated.example.test/';
   const peers: WebSocket[] = [];
-  const target = (targetId: string, url: string) => ({ targetId, type: 'page', title: targetId, url, attached: false, canAccessOpener: false });
+  const target = (targetId: string, url: string) => ({
+    targetId, type: 'page', title: targetId === 'second' ? 'second password=secret' : targetId, url, attached: false, canAccessOpener: false,
+  });
   const send = (method: string, params: unknown, sessionId?: string, socket = peers[0]) => socket.send(JSON.stringify({ method, params, sessionId }));
   socketServer.on('connection', (socket) => {
     peers.push(socket);
@@ -234,9 +236,11 @@ test('keeps Chrome bindings and evidence isolated across concurrent workspaces',
     nextSteps: ['核对后端的参数校验日志。'],
   };
   const analyses: string[][] = [];
-  const app = await createWorkbench(config, async (task, evidence) => {
+  const turns: AnalysisMessage[][] = [];
+  const app = await createWorkbench(config, async (task, evidence, _signal, messages) => {
     assert.deepEqual(task.frontend[0].branches.map((branch) => branch.name), ['feature/orders', 'release/orders']);
     analyses.push(evidence.map((entry) => entry.id));
+    turns.push(messages);
     return triage;
   });
   await listen(app, port);
@@ -283,7 +287,7 @@ test('keeps Chrome bindings and evidence isolated across concurrent workspaces',
     const result = await live();
     return result.capture.state === 'choose' ? result.capture.candidates : undefined;
   });
-  assert.deepEqual(candidates.map((candidate) => candidate.id), ['first', 'second']);
+  assert.deepEqual(candidates.map((candidate) => candidate.id), ['first', 'second', 'other']);
   assert.ok(!upstreamSends.includes('Target.attachToTarget'));
   await request(`/tasks/${task.id}/tab`, 'POST', { tabId: 'second' });
   await until(async () => (await live()).capture.state === 'attached' ? true : undefined);
@@ -308,6 +312,7 @@ test('keeps Chrome bindings and evidence isolated across concurrent workspaces',
   assert.doesNotMatch(JSON.stringify(entries), /secret|before attachment|unbound session/);
   const network = entries.find((entry) => entry.kind === 'network');
   assert.deepEqual(network && [network.url, network.status, network.duration], ['https://api.example.test/orders', 422, 150]);
+  assert.equal(network?.page?.url, targetUrl);
   const selected = [network!.id];
   const other = await request<Task>('/tasks', 'POST', { title: '另一个工作区', url: otherUrl });
   const otherPath = `/tasks/${other.id}`;
@@ -315,8 +320,8 @@ test('keeps Chrome bindings and evidence isolated across concurrent workspaces',
   assert.deepEqual(await request(`${otherPath}/chrome`), { dataDir: '', defaultDataDir: legacyDirectory });
   await request(`${otherPath}/chrome`, 'PUT', { dataDir: otherDirectory });
   await request(`${otherPath}/chrome/connect`, 'POST');
-  await until(async () => (await otherLive()).capture.tab?.id === 'other' ? true : undefined);
-  assert.equal((await live()).capture.tab?.id, 'second');
+  await until(async () => (await otherLive()).capture.tabs[0]?.id === 'other' ? true : undefined);
+  assert.equal((await live()).capture.tabs[0]?.id, 'second');
   send('Runtime.consoleAPICalled', { executionContextId: 1, type: 'log', args: [{ type: 'string', value: 'other workspace' }], timestamp: Date.now() }, 'session-other', peers[1]);
   await until(async () => (await otherLive()).capture.entries.length === 1 ? true : undefined);
   assert.doesNotMatch(JSON.stringify((await live()).capture.entries), /other workspace/);
@@ -327,7 +332,7 @@ test('keeps Chrome bindings and evidence isolated across concurrent workspaces',
   assert.equal(crossWorkspace.status, 409);
   await request(`${otherPath}/chrome/disconnect`, 'POST');
   assert.equal((await otherLive()).connection.state, 'idle');
-  assert.equal((await live()).capture.tab?.id, 'second');
+  assert.equal((await live()).capture.tabs[0]?.id, 'second');
   const analysisPath = `/tasks/${task.id}/analysis`;
   const analyze = (ids: string[], from = origin) => fetch(`${origin}/api${analysisPath}`, {
     method: 'POST', headers: { Origin: from, 'Content-Type': 'application/json', Connection: 'close' },
@@ -342,10 +347,21 @@ test('keeps Chrome bindings and evidence isolated across concurrent workspaces',
   assert.equal(retried.evidence.length, 1);
   assert.deepEqual(await request<EvidenceAnalysis>(analysisPath, 'POST', { ids: [...selected, ...selected] }), triage);
   assert.deepEqual(analyses, [selected]);
+  const messages: AnalysisMessage[] = [
+    { role: 'user', text: '接口报错该找谁？' },
+    { role: 'assistant', text: triage.summary },
+    { role: 'user', text: '接下来该查哪些日志？' },
+  ];
+  assert.deepEqual(await request<EvidenceAnalysis>(analysisPath, 'POST', { ids: [], messages }), triage);
+  assert.deepEqual(turns, [[], messages]);
 
   send('Target.targetInfoChanged', { targetInfo: target('second', `${new URL(targetUrl).origin}/orders/view/42`) });
-  await until(async () => (await live()).capture.tab?.url.endsWith('/42') ? true : undefined);
+  await until(async () => (await live()).capture.tabs[0]?.url.endsWith('/42') ? true : undefined);
   assert.equal(upstreamSends.filter((method) => method === 'Target.attachToTarget').length, 2);
+  await request(`/tasks/${task.id}/tab`, 'POST', { tabId: 'first' });
+  await until(async () => (await live()).capture.tabs.length === 2 ? true : undefined);
+  await request(`/tasks/${task.id}/tab`, 'DELETE', { tabId: 'first' });
+  assert.deepEqual((await live()).capture.tabs.map(({ id }) => id), ['second']);
   send('Runtime.consoleAPICalled', { executionContextId: 1, type: 'info', args: [{ type: 'string', value: 'still listening' }], timestamp: Date.now() }, session);
   await until(async () => (await live()).capture.entries.some((entry) => entry.kind === 'console' && entry.message === 'still listening') ? true : undefined);
   assert.ok(!upstreamSends.some((method) => ['Target.createTarget', 'Page.navigate', 'Runtime.evaluate'].includes(method)));

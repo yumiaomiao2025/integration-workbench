@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import type { ConnectionStatus } from '../../src/contracts.ts';
 import { api, explain, gitLabLogin, type ChromeDetection, type ChromeSettings, type GitLabSettings, type GitLabStatus } from './api.ts';
+import { ClaudeConnectionTest } from './ClaudeConnectionTest.tsx';
 import { Dialog, Icon } from './ui.tsx';
 
-export type SettingsPane = 'gitlab' | 'chrome';
+export type SettingsPane = 'gitlab' | 'chrome' | 'claude';
 type Notify = (message: string, isError?: boolean) => void;
 type Settings = { gitlab: GitLabSettings; chrome: ChromeSettings | null };
 
@@ -39,7 +40,7 @@ export function ConnectionSettings({ initialPane, workspace, gitlabStatus, conne
     return () => { controller.abort(); };
   }, [retry, workspaceId]);
 
-  return <Dialog id="settings-dialog" title="连接设置" description="配置 GitLab 授权与当前工作区的 Chrome 连接。" onClose={onClose}>
+  return <Dialog id="settings-dialog" title="连接设置" description="管理 GitLab、Chrome 和 Claude Code 连接。" onClose={onClose}>
     <div className="settings-tabs tabs" aria-label="连接类型">
       <button type="button" className={`evidence-tab${pane === 'gitlab' ? ' active' : ''}`} aria-pressed={pane === 'gitlab'} onClick={() => setPane('gitlab')}>
         <Icon name="git" />GitLab
@@ -47,6 +48,9 @@ export function ConnectionSettings({ initialPane, workspace, gitlabStatus, conne
       {workspace && <button type="button" className={`evidence-tab${pane === 'chrome' ? ' active' : ''}`} aria-pressed={pane === 'chrome'} onClick={() => setPane('chrome')}>
         <Icon name="browser" />Chrome
       </button>}
+      <button type="button" className={`evidence-tab${pane === 'claude' ? ' active' : ''}`} aria-pressed={pane === 'claude'} onClick={() => setPane('claude')}>
+        <Icon name="terminal" />Claude Code
+      </button>
     </div>
     {settings ? <>
       <GitLabForm initial={settings.gitlab} visible={pane === 'gitlab'} status={gitlabStatus} fromEditor={fromEditor}
@@ -56,6 +60,10 @@ export function ConnectionSettings({ initialPane, workspace, gitlabStatus, conne
     </> : loadError ? <div className="settings-loading"><p role="alert">{loadError}</p>
       <button type="button" className="button secondary" onClick={() => { setLoadError(''); setRetry((value) => value + 1); }}>重试</button>
     </div> : <p className="settings-loading" role="status">正在读取本机设置…</p>}
+    {pane === 'claude' && <div className="dialog-body">
+      <p>工作台使用本机 Claude Code 的模型配置。测试会向当前模型服务发送一条简短消息。</p>
+      <ClaudeConnectionTest />
+    </div>}
   </Dialog>;
 }
 
@@ -225,7 +233,7 @@ function ChromeForm({ workspace, initial, visible, connection, refresh, connect,
       setConfig(chrome);
       changeDirectory(chrome.dataDir);
       refresh();
-      notify('工作区的 Chrome 设置已保存。');
+      notify('任务的 Chrome 设置已保存。');
     } catch (failure) {
       setError(explain(failure));
     } finally {
@@ -236,7 +244,7 @@ function ChromeForm({ workspace, initial, visible, connection, refresh, connect,
   return <form hidden={!visible} onSubmit={(event) => void save(event)}>
     <div className="dialog-body">
       <div className="settings-instructions">
-        <p>当前工作区为「{workspace.title}」。</p>
+        <p>当前任务为「{workspace.title}」。</p>
         <p>在已经打开的 Chrome 144 或更新版本中访问下方地址，启用远程调试。连接时，Chrome 会请求你的许可。</p>
         <CopyAddress id="settings-chrome-address" label="Chrome 远程调试设置地址" value="chrome://inspect/#remote-debugging" />
       </div>

@@ -17,6 +17,7 @@ export type TaskInput = {
 type EvidenceBase = {
   id: string;
   at: string;
+  page?: { title: string; url: string };
 };
 
 export type NetworkEvidence = EvidenceBase & {
@@ -46,13 +47,15 @@ export type Task = TaskInput & {
 };
 
 export type EvidenceAnalysis = {
-  target: 'frontend' | 'backend' | 'insufficient';
+  target: 'frontend' | 'backend' | 'insufficient' | null;
   summary: string;
   findings: { index: number; reason: string }[];
   nextSteps: string[];
 };
 
+export type AnalysisMessage = { role: 'user' | 'assistant'; text: string };
 export type CandidateTab = { id: string; title: string; url: string };
+export type ConnectedTab = CandidateTab & { startedAt: string };
 
 export type ConnectionStatus = {
   state: 'idle' | 'connecting' | 'connected' | 'disconnected' | 'error';
@@ -63,8 +66,7 @@ export type LiveCapture = {
   revision: number;
   state: 'waiting' | 'choose' | 'attached';
   message: string;
-  startedAt: string | null;
-  tab: CandidateTab | null;
+  tabs: ConnectedTab[];
   candidates: CandidateTab[];
   entries: Evidence[];
 };

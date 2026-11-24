@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Task } from '../../src/contracts.ts';
+import type { AgentLaunch } from './AgentDialog.tsx';
 import { api, explain, type GitLabStatus, type TaskSummary } from './api.ts';
 import { ConnectionSettings, type SettingsPane } from './ConnectionSettings.tsx';
 import { EvidencePanel } from './EvidencePanel.tsx';
@@ -20,6 +21,7 @@ export function App() {
   const [loading, setLoading] = useState(true);
   const [editor, setEditor] = useState<{ task: Task | null } | null>(null);
   const [pane, setPane] = useState<SettingsPane | null>(null);
+  const [agent, setAgent] = useState<AgentLaunch | null>(null);
   const [notice, setNotice] = useState<{ message: string; error: boolean } | null>(null);
   const selecting = useRef(false);
   const live = useLiveCapture(task?.id);
@@ -96,10 +98,10 @@ export function App() {
     }
   }
 
-  async function chooseTab(id: string) {
+  async function changeTab(id: string, method: 'POST' | 'DELETE') {
     if (!task) return;
     try {
-      await api.chooseTab(task.id, id);
+      await api.changeTab(task.id, id, method);
       live.refresh();
     } catch (error) {
       notify(explain(error), true);
@@ -113,7 +115,7 @@ export function App() {
     setTask(saved);
     setEditor(null);
     live.refresh();
-    notify(editor?.task ? '工作区已更新。' : '工作区已创建。');
+    notify(editor?.task ? '任务已更新。' : '任务已创建。');
   }
 
   async function saveEvidence(id: string, ids: string[]) {
@@ -133,19 +135,23 @@ export function App() {
         <div className="workspace">
           <div className="page-heading">
             <div className="page-heading-copy">
-              <h1>{task?.title ?? '联调工作区'}</h1>
+              <h1>{task?.title ?? '联调任务'}</h1>
               {task ? <p className="task-url"><Icon name="link" /><span>{task.url}</span></p>
                 : <p>选择仓库和分支，查看现有 Chrome 标签页的请求与日志。</p>}
             </div>
-            {task && <button className="button secondary" type="button" onClick={() => setEditor({ task })}><Icon name="edit" />编辑工作区</button>}
+            {task && <div className="task-actions">
+              <button className="button secondary" type="button" onClick={() => setEditor({ task })}><Icon name="edit" />编辑任务</button>
+              <button className="button primary" type="button" aria-haspopup="dialog" onClick={() => setAgent({ taskId: task.id, ids: [] })}>联调 Agent</button>
+            </div>}
           </div>
           <div className="summary-grid">
             <RepositoryCard task={task} />
             <ChromeCard key={task?.id} connection={live.connection} capture={live.capture} task={task} onConnect={connect}
-              onDisconnect={() => void changeConnection('disconnect')} onSettings={() => setPane('chrome')} onChoose={(id) => void chooseTab(id)} />
+              onDisconnect={() => void changeConnection('disconnect')} onSettings={() => setPane('chrome')}
+              onChoose={(id) => void changeTab(id, 'POST')} onRemove={(id) => void changeTab(id, 'DELETE')} />
           </div>
           <EvidencePanel task={task} capture={live.capture} connection={live.connection} loading={loading}
-            onNew={openNewTask} onConnect={connect} onSave={saveEvidence} notify={notify} />
+            agent={agent} onAgent={setAgent} onNew={openNewTask} onConnect={connect} onSave={saveEvidence} notify={notify} />
         </div>
       </main>
     </div>

@@ -7,14 +7,14 @@ import { Badge, formatTime, Icon } from './ui.tsx';
 export function Sidebar({ tasks, selectedId, loading, onNew, onSelect }: {
   tasks: TaskSummary[]; selectedId?: string; loading: boolean; onNew: () => void; onSelect: (id: string) => void;
 }) {
-  return <aside className="sidebar" aria-label="工作区导航">
+  return <aside className="sidebar" aria-label="任务导航">
     <div className="brand"><span className="brand-mark"><Icon name="brand" /></span><span>联调工作台</span></div>
-    <button className="button sidebar-new" type="button" onClick={onNew}><Icon name="plus" />新建工作区</button>
-    <div className="sidebar-section"><span>工作区</span><span className="sidebar-count">{tasks.length}</span></div>
-    <nav className="task-list" aria-label="工作区">
+    <button className="button sidebar-new" type="button" onClick={onNew}><Icon name="plus" />新建任务</button>
+    <div className="sidebar-section"><span>任务</span><span className="sidebar-count">{tasks.length}</span></div>
+    <nav className="task-list" aria-label="任务">
       {tasks.length ? tasks.map((task) => <button type="button" key={task.id} className="task-item" title={task.title}
         aria-current={selectedId === task.id ? 'page' : undefined} onClick={() => onSelect(task.id)}><Icon name="list" /><span>{task.title}</span></button>)
-        : <span className="sidebar-empty">{loading ? '正在加载工作区…' : '暂无工作区'}</span>}
+        : <span className="sidebar-empty">{loading ? '正在加载任务…' : '暂无任务'}</span>}
     </nav>
     <div className="sidebar-bottom"><span className="local-icon"><Icon name="front" /></span><span>本机存储<small>证据保存在当前电脑</small></span></div>
   </aside>;
@@ -22,7 +22,7 @@ export function Sidebar({ tasks, selectedId, loading, onNew, onSelect }: {
 
 export function TopBar({ task, gitlab, onSettings }: { task: Task | null; gitlab: GitLabStatus | null; onSettings: () => void }) {
   return <header className="topbar">
-    <div className="breadcrumb"><Icon name="list" /><span>工作区</span>
+    <div className="breadcrumb"><Icon name="list" /><span>任务</span>
       {task && <><Icon name="chevron" className="breadcrumb-separator" /><strong>{task.title}</strong></>}
     </div>
     <div className="topbar-actions">
@@ -58,23 +58,23 @@ export function RepositoryCard({ task }: { task: Task | null }) {
   </section>;
 }
 
-export function ChromeCard({ connection, capture, task, onConnect, onDisconnect, onSettings, onChoose }: {
+export function ChromeCard({ connection, capture, task, onConnect, onDisconnect, onSettings, onChoose, onRemove }: {
   connection: ConnectionStatus; capture: LiveCapture | null; task: Task | null; onConnect: () => void;
-  onDisconnect: () => void; onSettings: () => void; onChoose: (id: string) => void;
+  onDisconnect: () => void; onSettings: () => void; onChoose: (id: string) => void; onRemove: (id: string) => void;
 }) {
   const [tabId, setTabId] = useState('');
   const { state } = connection;
   const connected = state === 'connected';
   const connecting = state === 'connecting';
-  const tab = connected ? capture?.tab : undefined;
+  const tabs = connected ? capture?.tabs ?? [] : [];
   const candidates = capture?.candidates ?? [];
-  const showPicker = connected && (capture?.state === 'choose' || Boolean(tab && candidates.some((item) => item.id !== tab.id)));
+  const showPicker = connected && candidates.length > 0;
   const selected = candidates.some((entry) => entry.id === tabId) ? tabId : '';
   let label = '未连接';
   let color: 'ok' | 'pending' | 'error' | undefined;
-  let help = task ? '在已打开的 Chrome 中启用远程调试，再连接现有标签页。' : '新建工作区后，可以连接现有 Chrome 标签页。';
+  let help = task ? '在已打开的 Chrome 中启用远程调试，再连接现有标签页。' : '新建任务后，可以连接现有 Chrome 标签页。';
   if (connected) {
-    label = tab ? '采集中' : '已连接';
+    label = tabs.length ? `采集中 · ${tabs.length} 页` : '已连接';
     color = 'ok';
     help = capture?.message || '正在查找匹配的标签页…';
   } else if (connecting) {
@@ -91,19 +91,27 @@ export function ChromeCard({ connection, capture, task, onConnect, onDisconnect,
   return <section className="card chrome-card" aria-labelledby="chrome-title">
     <div className="chrome-heading"><div className="card-heading"><span className="tile-icon blue"><Icon name="browser" /></span><h2 id="chrome-title">Chrome 连接</h2></div><Badge color={color}>{label}</Badge></div>
     <div className="connection-details">
-      {tab ? <div><strong title={tab.url}>{tab.title || tab.url}</strong>
-        {capture?.startedAt && <small>采集起始时间 {formatTime(capture.startedAt)}</small>}
-      </div> : <p>{help}</p>}
+      {task && <p>可以同时接入多个已打开的页面。</p>}
+      {tabs.length > 0 && <ul className="connected-pages" aria-label="已连接的页面">
+        {tabs.map((tab) => <li key={tab.id}>
+          <div><strong title={tab.url}>{tab.title || tab.url}</strong>
+            {tab.title && <small>{tab.url}</small>}
+            <small>采集开始于 {formatTime(tab.startedAt)}</small></div>
+          <button className="icon-button" type="button" aria-label={`移除页面 ${tab.title || tab.url}`}
+            title="移除页面" onClick={() => onRemove(tab.id)}><Icon name="close" /></button>
+        </li>)}
+      </ul>}
+      {(!tabs.length || capture?.message) && <p>{help}</p>}
       {showPicker && <form className="tab-picker" onSubmit={choose}>
-        <select aria-label="选择 Chrome 标签页" required value={selected} onChange={(event) => setTabId(event.target.value)}>
-          <option value="">{tab ? '切换标签页' : '选择标签页'}</option>
+        <select aria-label="选择要接入的页面" required value={selected} onChange={(event) => setTabId(event.target.value)}>
+          <option value="">选择已打开的页面</option>
           {candidates.map((entry) => <option key={entry.id} value={entry.id}>{entry.title || entry.url} · {entry.url}</option>)}
         </select>
-        <button className="button secondary" type="submit">接入</button>
+        <button className="button secondary" type="submit" disabled={!selected}>接入页面</button>
       </form>}
     </div>
     {task && <div className="chrome-actions">
-      {connected || connecting ? <button className="button secondary" type="button" onClick={onDisconnect}>{connecting ? '取消连接' : '断开连接'}</button>
+      {connected || connecting ? <button className="button secondary" type="button" onClick={onDisconnect}>{connecting ? '取消连接' : '断开 Chrome'}</button>
         : <button className="button primary" type="button" onClick={onConnect}><Icon name="link" />{state === 'idle' ? '连接 Chrome' : '重新连接'}</button>}
       <button className="button secondary" type="button" onClick={onSettings}>Chrome 设置</button>
     </div>}

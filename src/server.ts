@@ -3,9 +3,9 @@ import { readFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { extname, join } from 'node:path';
 import { readConfig, settingsPath } from './config.ts';
-import type { Task } from './contracts.ts';
+import type { AnalysisMessage, Task } from './contracts.ts';
 import { HttpError, readJson, sendJson } from './http.ts';
-import { analyzeWithClaude, type EvidenceAnalyzer } from './modules/analysis/index.ts';
+import { analyzeWithClaude, checkClaude, type EvidenceAnalyzer } from './modules/analysis/index.ts';
 import { ChromeCollector } from './modules/chrome/index.ts';
 import { checkChromeEndpoint } from './modules/chrome/cdp.ts';
 import { GitLab } from './modules/gitlab/index.ts';
@@ -41,7 +41,7 @@ export async function createWorkbenchHandler(config: Config, analyze: EvidenceAn
   function collectorFor(task: Task) {
     let collector = collectors.get(task.id);
     if (!collector) {
-      collector = new ChromeCollector(task.chromeDataDir || defaultChromeDirectory, task.url);
+      collector = new ChromeCollector(task.chromeDataDir || defaultChromeDirectory, task.url, config.origin);
       collectors.set(task.id, collector);
     }
     return collector;
@@ -80,6 +80,9 @@ export async function createWorkbenchHandler(config: Config, analyze: EvidenceAn
     }
 
     if (method === 'GET' && path === '/api/settings') return sendJson(response, settings.publicSettings());
+    if (method === 'POST' && path === '/api/claude/check') {
+      return withResponseSignal(response, checkClaude);
+    }
     if (method === 'PUT' && path === '/api/settings/gitlab') {
       await settings.setGitLab(await readJson(request));
       const next = settings.gitlab();
@@ -162,11 +165,12 @@ export async function createWorkbenchHandler(config: Config, analyze: EvidenceAn
         }
         return sendJson(response, { connection: chrome.status(), capture });
       }
-      if (method === 'POST' && action === 'tab') {
+      if ((method === 'POST' || method === 'DELETE') && action === 'tab') {
         const targetId = stringField(await readJson(request), 'tabId');
         const chrome = collectorFor(store.get(id));
-        chrome.choose(targetId);
-        return sendJson(response, chrome.live(), 202);
+        if (method === 'POST') chrome.choose(targetId);
+        else chrome.remove(targetId);
+        return sendJson(response, chrome.live(), method === 'POST' ? 202 : 200);
       }
       if (method === 'POST' && action === 'evidence') {
         const ids = evidenceIds(await readJson(request));
@@ -175,7 +179,10 @@ export async function createWorkbenchHandler(config: Config, analyze: EvidenceAn
         return sendJson(response, await store.saveEvidence(id, selected));
       }
       if (method === 'POST' && action === 'analysis') {
-        const ids = evidenceIds(await readJson(request));
+        const input = await readJson(request);
+        const ids = evidenceIds(input, true);
+        const messages = analysisMessages(input);
+        if (!ids.length && !messages.length) throw new HttpError(400, '请先输入问题或引用证据。');
         if (analysisRunning) throw new HttpError(409, '已有一批证据在分析，请等它完成后再试。');
         const current = store.get(id);
         const saved = new Map(current.evidence.map((entry) => [entry.id, entry]));
@@ -184,15 +191,10 @@ export async function createWorkbenchHandler(config: Config, analyze: EvidenceAn
           if (!entry) throw new HttpError(409, '有选中的证据尚未保存，请保存后重试。');
           return entry;
         });
-        const controller = new AbortController();
-        const cancel = () => controller.abort();
-        response.once('close', cancel);
         analysisRunning = true;
         try {
-          const result = await analyze(current, selected, controller.signal);
-          if (!controller.signal.aborted) sendJson(response, result);
+          await withResponseSignal(response, (signal) => analyze(current, selected, signal, messages));
         } finally {
-          response.off('close', cancel);
           analysisRunning = false;
         }
         return;
@@ -218,13 +220,39 @@ export async function createWorkbenchHandler(config: Config, analyze: EvidenceAn
   } };
 }
 
-function evidenceIds(value: unknown) {
+async function withResponseSignal(response: ServerResponse, run: (signal: AbortSignal) => Promise<unknown>) {
+  const controller = new AbortController();
+  const cancel = () => controller.abort();
+  response.once('close', cancel);
+  try {
+    if (response.destroyed) return;
+    const result = await run(controller.signal);
+    if (!controller.signal.aborted) sendJson(response, result);
+  } finally {
+    response.off('close', cancel);
+  }
+}
+
+function evidenceIds(value: unknown, allowEmpty = false) {
   const ids = (value as { ids?: unknown } | null)?.ids;
-  if (!Array.isArray(ids) || ids.length < 1 || ids.length > 400
+  if (!Array.isArray(ids) || (!allowEmpty && !ids.length) || ids.length > 400
     || !ids.every((entry) => typeof entry === 'string' && /^[\da-f-]{36}$/.test(entry))) {
     throw new HttpError(400, '请选择 1 至 400 条请求或日志。');
   }
   return [...new Set<string>(ids)];
+}
+
+function analysisMessages(value: unknown): AnalysisMessage[] {
+  const messages = (value as { messages?: unknown } | null)?.messages;
+  if (messages === undefined) return [];
+  if (!Array.isArray(messages) || messages.length > 11) throw new HttpError(400, '对话消息格式有误。');
+  const parsed = messages.map((entry: Partial<AnalysisMessage> | null) => {
+    if (!entry || (entry.role !== 'user' && entry.role !== 'assistant') || typeof entry.text !== 'string'
+      || !entry.text.trim() || entry.text.length > 2000) throw new HttpError(400, '每条对话消息需包含 1–2000 个字符。');
+    return { role: entry.role, text: entry.text.trim() };
+  });
+  if (parsed.length && parsed.at(-1)?.role !== 'user') throw new HttpError(400, '请添加一条用户问题。');
+  return parsed;
 }
 
 function setHeaders(response: ServerResponse) {

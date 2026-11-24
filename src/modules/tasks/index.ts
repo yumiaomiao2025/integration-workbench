@@ -17,7 +17,7 @@ export class TaskStore {
     try {
       const saved = JSON.parse(await readFile(file, 'utf8'));
       if (![1, 2].includes(saved.version) || !Array.isArray(saved.tasks)) {
-        throw new Error('工作区文件格式不受支持。');
+        throw new Error('任务文件格式不受支持。');
       }
       tasks = saved.tasks.map((task: StoredTask) => ({
         ...task,
@@ -42,7 +42,7 @@ export class TaskStore {
 
   get(id: string) {
     const task = this.tasks.find((entry) => entry.id === id);
-    if (!task) throw new HttpError(404, '找不到这个工作区。');
+    if (!task) throw new HttpError(404, '找不到这个任务。');
     return task;
   }
 
@@ -115,10 +115,10 @@ function parseBranch(value: unknown): RepositoryBranch {
 }
 
 export function parseTask(value: unknown, instance: string): TaskInput {
-  if (!value || typeof value !== 'object') throw new HttpError(400, '请填写工作区信息。');
+  if (!value || typeof value !== 'object') throw new HttpError(400, '请填写任务信息。');
   const { title, url, frontend, backend } = value as Partial<TaskInput>;
   if (typeof title !== 'string' || !title.trim() || title.trim().length > 100) {
-    throw new HttpError(400, '工作区名称需包含 1–100 个字符。');
+    throw new HttpError(400, '任务名称需包含 1–100 个字符。');
   }
   const target = typeof url === 'string' && url.length <= 2048 ? URL.parse(url.trim()) : null;
   if (!target || !['https:', 'http:'].includes(target.protocol) || target.username || target.password) {

@@ -11,7 +11,7 @@ export function cleanUrl(raw: string) {
   return url && ['https:', 'http:'].includes(url.protocol) ? `${url.origin}${url.pathname}`.slice(0, 2048) : '';
 }
 
-function safeText(value: string, limit: number) {
+export function safeText(value: string, limit: number) {
   return value.slice(0, limit * 3)
     .replace(secretAssignments, '[敏感字段已省略]')
     .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, 'Bearer [已省略]')
