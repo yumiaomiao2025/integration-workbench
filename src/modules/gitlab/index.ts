@@ -9,7 +9,7 @@ type Session = { profile: Profile; credentials: Credentials; refreshing?: Promis
 type GitLabProject = { id: number; path_with_namespace: string; default_branch: string | null };
 type GitLabBranch = { name: string; default: boolean; commit: { id: string } };
 
-const pageSize = 25;
+const pageSize = 50;
 const requestTimeout = 10_000;
 
 export class GitLab {
@@ -78,6 +78,7 @@ export class GitLab {
     const params = listQuery(query);
     params.set('membership', 'true');
     params.set('simple', 'true');
+    if (params.has('search')) params.set('search_namespaces', 'true');
     const result = await this.list<GitLabProject>(sessionId, '/projects', params);
     return {
       items: result.items.map((project) => ({
@@ -133,8 +134,11 @@ export class GitLab {
     const items = await response.json() as T[];
     const reportedPage = response.headers.get('x-next-page');
     const page = Number(params.get('page'));
-    const nextPage = reportedPage === null ? (items.length === pageSize ? page + 1 : null) : Number(reportedPage) || null;
-    return { items, nextPage };
+    const links = response.headers.get('link');
+    const nextUrl = links?.match(/<([^>]+)>\s*;\s*rel="next"/i)?.[1];
+    const linkedPage = nextUrl ? URL.parse(nextUrl, this.config.baseUrl)?.searchParams.get('page') : null;
+    const next = Number(reportedPage ?? linkedPage ?? (links ? 0 : items.length === pageSize ? page + 1 : 0));
+    return { items, nextPage: Number.isInteger(next) && next > page && next <= 2000 ? next : null };
   }
 
   private async request<T>(path: string, token: string) {

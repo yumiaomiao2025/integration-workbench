@@ -1,16 +1,17 @@
+export type RepositoryBranch = { name: string; commitSha: string };
+
 export type RepositoryBinding = {
   projectId: number;
   instance?: string;
   path: string;
-  branch: string;
-  commitSha: string;
+  branches: RepositoryBranch[];
 };
 
 export type TaskInput = {
   title: string;
   url: string;
-  frontend: RepositoryBinding | null;
-  backend: RepositoryBinding | null;
+  frontend: RepositoryBinding[];
+  backend: RepositoryBinding[];
 };
 
 type EvidenceBase = {

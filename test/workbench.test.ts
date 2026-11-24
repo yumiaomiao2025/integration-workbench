@@ -43,11 +43,17 @@ test('personal GitLab OAuth validates state and PKCE, then lists projects and br
         assert.equal(request.headers.authorization, 'Bearer renewed');
         assert.equal(url.searchParams.get('membership'), 'true');
         assert.equal(url.searchParams.get('search'), 'orders');
+        assert.equal(url.searchParams.get('search_namespaces'), 'true');
+        assert.equal(url.searchParams.get('per_page'), '50');
         response.setHeader('X-Next-Page', '2');
         body = [{ id: 52, path_with_namespace: 'team/orders', default_branch: 'main' }];
       } else if (url.pathname === '/api/v4/projects/52/repository/branches') {
         assert.equal(request.headers.authorization, 'Bearer renewed');
-        body = [{ name: 'feature/orders', default: false, commit: { id: sha } }];
+        assert.equal(url.searchParams.get('search'), 'orders');
+        const page = url.searchParams.get('page');
+        const next = page === '1' ? `<${url.pathname}?page=2&search=orders>; rel="next"` : '';
+        response.setHeader('Link', next);
+        body = [{ name: page === '1' ? 'feature/orders' : 'release/orders', default: false, commit: { id: sha } }];
       } else {
         response.writeHead(404).end();
         return;
@@ -111,10 +117,12 @@ test('personal GitLab OAuth validates state and PKCE, then lists projects and br
   assert.deepEqual(status.profile, { id: 10, name: 'QA', username: 'qa-user' });
   const [projects, branches] = await Promise.all([
     fetchApi('/api/gitlab/projects?search=orders', auth).then((response) => response.json()),
-    fetchApi('/api/gitlab/projects/52/branches', auth).then((response) => response.json()),
+    fetchApi('/api/gitlab/projects/52/branches?search=orders', auth).then((response) => response.json()),
   ]);
   assert.deepEqual(projects, { items: [{ id: 52, path: 'team/orders', defaultBranch: 'main' }], nextPage: 2 });
-  assert.deepEqual(branches.items, [{ name: 'feature/orders', isDefault: false, commitSha: sha }]);
+  assert.deepEqual(branches, { items: [{ name: 'feature/orders', isDefault: false, commitSha: sha }], nextPage: 2 });
+  const later = await (await fetchApi('/api/gitlab/projects/52/branches?search=orders&page=2', auth)).json();
+  assert.deepEqual(later, { items: [{ name: 'release/orders', isDefault: false, commitSha: sha }], nextPage: null });
   assert.equal(refreshes, 1);
   const unauthorized = await fetchApi('/api/gitlab/projects');
   assert.equal(unauthorized.status, 401);
@@ -122,8 +130,12 @@ test('personal GitLab OAuth validates state and PKCE, then lists projects and br
   assert.equal((await (await fetchApi('/api/gitlab/status', auth)).json()).profile.username, 'qa-user');
   assert.equal((await install({ ...settings, clientId: 'new-app' })).status, 200);
   assert.equal((await (await fetchApi('/api/gitlab/status', auth)).json()).profile, null);
-  const legacy = await (await fetchApi('/api/tasks/d586d40e-a7bb-4c8d-9e01-6e4e853adba8')).json();
-  assert.equal(legacy.frontend.instance, 'https://gitlab.com');
+  const legacy = await (await fetchApi('/api/tasks/d586d40e-a7bb-4c8d-9e01-6e4e853adba8')).json() as Task;
+  assert.deepEqual(legacy.frontend, [{
+    projectId: 52, instance: 'https://gitlab.com', path: 'team/orders', branches: [{ name: 'feature/orders', commitSha: sha }],
+  }]);
+  assert.deepEqual(legacy.backend, []);
+  assert.equal(JSON.parse(await readFile(config.dataFile, 'utf8')).version, 2);
   assert.equal((await start()).searchParams.get('client_id'), 'new-app');
   await stop(app);
   const restarted = await createWorkbench(config);
@@ -234,8 +246,18 @@ test('chooses among existing tabs and continuously collects and saves only selec
   const found = await request<{ ready: boolean }>('/settings/chrome/check', 'POST', { dataDir: data });
   assert.equal(found.ready, true);
   await request('/settings/chrome', 'PUT', { dataDir: data });
-  const task = await request<Task>('/tasks', 'POST', { title: '联调订单', url: targetUrl, frontend: { projectId: 52, path: 'team/orders', branch: 'feature/orders', commitSha: sha } });
-  assert.equal(task.frontend?.branch, 'feature/orders');
+  const taskFields = { title: '联调订单', url: targetUrl };
+  const emptyTask = await request<Task>('/tasks', 'POST', taskFields);
+  assert.deepEqual(emptyTask.frontend, []);
+  assert.deepEqual(emptyTask.backend, []);
+  const repository = (projectId: number, path: string, ...branches: string[]) => ({
+    projectId, path, instance: config.gitlab.baseUrl, branches: branches.map((name) => ({ name, commitSha: sha })),
+  });
+  const frontend = [repository(52, 'team/orders', 'feature/orders', 'release/orders'), repository(53, 'team/ui')];
+  const backend = [repository(54, 'team/api', 'main'), repository(55, 'team/inventory', 'develop', 'main')];
+  const task = await request<Task>(`/tasks/${emptyTask.id}`, 'PUT', { ...taskFields, frontend, backend });
+  assert.deepEqual(task.frontend, frontend);
+  assert.deepEqual(task.backend, backend);
   await request('/chrome/connect', 'POST');
   const live = () => request<{ connection: ConnectionStatus; capture: LiveCapture }>(`/tasks/${task.id}/live`);
   const candidates = await until(async () => {
@@ -285,6 +307,8 @@ test('chooses among existing tabs and continuously collects and saves only selec
   await listen(reload, port);
   try {
     const after = await request<Task>(`/tasks/${task.id}`);
+    assert.deepEqual(after.frontend, frontend);
+    assert.deepEqual(after.backend, backend);
     assert.equal(after.evidence.length, 1);
     assert.equal((await live()).capture.entries.length, 0);
     assert.equal((await request<{ chrome: { dataDir: string } }>('/settings')).chrome.dataDir, data);

@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import type { ConnectionStatus, LiveCapture, Task } from '../../src/contracts.ts';
 import { type GitLabStatus, type TaskSummary } from './api.ts';
-import { repositoryRoles, type RepositoryRole } from './TaskEditor.tsx';
+import { repositoryKey, repositoryRoles, type RepositoryRole } from './TaskEditor.tsx';
 import { Badge, formatTime, Icon } from './ui.tsx';
 
 export function Sidebar({ tasks, selectedId, loading, onNew, onSelect }: {
@@ -40,13 +40,16 @@ export function RepositoryCard({ task }: { task: Task | null }) {
     <div className="card-heading"><span className="tile-icon violet"><Icon name="git" /></span><h2 id="repository-title">仓库与分支</h2></div>
     <div className="repo-pair">
       {(Object.keys(repositoryRoles) as RepositoryRole[]).map((role) => {
-        const binding = task?.[role];
+        const bindings = task?.[role] ?? [];
         return <div className="repo-item" key={role}>
           <div className="repo-label"><Icon name={role === 'frontend' ? 'front' : 'back'} />{repositoryRoles[role]}仓库</div>
-          {binding ? <>
-            <div className="repo-value" title={binding.instance ? `${binding.instance}/${binding.path}` : binding.path}>{binding.path}</div>
-            <span className="branch-name" title={`选定分支 ${binding.branch} · ${binding.commitSha}`}>{binding.branch}</span>
-          </> : <div className="repo-value empty">未选择仓库</div>}
+          {bindings.length ? <ul className="repository-summary">
+            {bindings.map((binding) => <li key={repositoryKey(binding)}>
+              <div className="repo-value" title={binding.instance ? `${binding.instance}/${binding.path}` : binding.path}>{binding.path}</div>
+              {binding.branches.length ? binding.branches.map((branch) => <span className="branch-name" key={branch.name}
+                title={`选定分支 ${branch.name} · ${branch.commitSha}`}>{branch.name}</span>) : <span className="repo-picker-empty">未选择分支</span>}
+            </li>)}
+          </ul> : <div className="repo-value empty">未选择仓库</div>}
         </div>;
       })}
     </div>

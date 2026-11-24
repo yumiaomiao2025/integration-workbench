@@ -27,10 +27,9 @@ export async function createWorkbench(config: Config) {
 }
 
 export async function createWorkbenchHandler(config: Config) {
-  const store = await TaskStore.open(config.dataFile);
   const settings = await SettingsStore.open(settingsPath(config.dataFile), config);
   let gitlabConfig = settings.gitlab();
-  await store.setLegacyInstance(gitlabConfig.baseUrl);
+  const store = await TaskStore.open(config.dataFile, gitlabConfig.baseUrl);
   let gitlab = new GitLab(gitlabConfig);
   const chrome = new ChromeCollector(settings.chromeDataDir());
   const expectedHost = new URL(config.origin).host;
