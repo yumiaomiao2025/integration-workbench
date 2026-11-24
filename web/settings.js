@@ -62,7 +62,7 @@ export function createSettings({ api, notify, explain, refreshGitLab, refreshChr
     confidential.checked = config.confidential;
     secret.value = '';
     $('#settings-gitlab-callback').value = config.redirectUri;
-    setError('gitlab', '');
+    clearGitLabError();
     updateGitLab();
   }
 
@@ -82,10 +82,9 @@ export function createSettings({ api, notify, explain, refreshGitLab, refreshChr
   }
 
   function gitlabDraft() {
-    const address = url.value.trim();
     return {
-      baseUrl: parseGitLabUrl(address) || address, clientId: clientId.value.trim(),
-      confidential: confidential.checked, clientSecret: confidential.checked ? secret.value : '',
+      baseUrl: parseGitLabUrl(url.value), clientId: clientId.value.trim(),
+      confidential: confidential.checked, clientSecret: confidential.checked ? secret.value.trim() : '',
     };
   }
 
@@ -97,7 +96,11 @@ export function createSettings({ api, notify, explain, refreshGitLab, refreshChr
     const dirty = !sameApp || draft.confidential !== config.confidential || Boolean(draft.clientSecret);
     const secretSaved = sameApp && config.hasSecret;
     const profile = gitlabStatus?.profile;
-    $('#settings-gitlab-account').textContent = profile ? `已授权 · ${profile.name} (@${profile.username})` : 'GitLab 尚未授权。';
+    const authorizeReady = !dirty && Boolean(config.clientId) && (!config.confidential || config.hasSecret) && !profile;
+    const account = $('#settings-gitlab-account');
+    account.textContent = profile ? `已授权 · ${profile.name} (@${profile.username})`
+      : authorizeReady ? 'GitLab 设置已保存，等待授权。' : 'GitLab 尚未授权。';
+    account.parentElement.classList.toggle('setting-ready', authorizeReady || Boolean(profile));
     $('#settings-gitlab-logout').hidden = !profile;
     $('#settings-gitlab-secret-fields').hidden = !draft.confidential;
     secret.disabled = !draft.confidential;
@@ -106,14 +109,35 @@ export function createSettings({ api, notify, explain, refreshGitLab, refreshChr
     $('#settings-gitlab-secret-help').textContent = config.secretProtection === 'windows'
       ? '密钥由当前 Windows 用户加密保存。' : '密钥保留在本次本机服务会话中。';
     const authorize = $('#settings-gitlab-authorize');
-    authorize.hidden = dirty || !config.clientId || (config.confidential && !config.hasSecret) || Boolean(profile);
+    authorize.hidden = !authorizeReady;
+    authorize.target = $('#task-dialog').open ? '_blank' : '_self';
+    const saveButton = $('#save-gitlab-settings');
+    saveButton.classList.toggle('primary', !authorizeReady);
+    saveButton.classList.toggle('secondary', authorizeReady);
     $('#settings-gitlab-hint').textContent = dirty ? '保存后即可授权。' : (config.confidential && !config.hasSecret ? '请输入密钥后保存。' : '');
 
-    const instance = parseGitLabUrl(draft.baseUrl);
     const register = $('#settings-gitlab-register');
-    register.hidden = !instance;
-    if (instance) register.href = `${instance}/oauth/applications`;
+    register.hidden = !draft.baseUrl;
+    if (draft.baseUrl) register.href = `${draft.baseUrl}/oauth/applications`;
     else register.removeAttribute('href');
+  }
+
+  function clearGitLabError() {
+    for (const field of [url, clientId, secret]) field.removeAttribute('aria-invalid');
+    setError('gitlab', '');
+  }
+
+  function validateGitLab(draft) {
+    let error;
+    if (!draft.baseUrl) error = [url, '请输入有效的 GitLab 实例地址，例如 gitlab.example.com。'];
+    else if (!/^\S{1,512}$/.test(draft.clientId)) error = [clientId, '请粘贴 GitLab 页面上完整的应用程序 ID。'];
+    else if (secret.required && !draft.clientSecret) error = [secret, '请输入 GitLab 私密应用的密码（Client Secret）。'];
+    if (!error) return true;
+    const [field, message] = error;
+    field.setAttribute('aria-invalid', 'true');
+    field.focus();
+    setError('gitlab', message);
+    return false;
   }
 
   function updateChrome() {
@@ -159,8 +183,15 @@ export function createSettings({ api, notify, explain, refreshGitLab, refreshChr
     const isGitLab = section === 'gitlab';
     const button = isGitLab ? $('#save-gitlab-settings') : $('#save-chrome-settings');
     const body = isGitLab ? gitlabDraft() : { dataDir: directory.value };
-    setError(section, '');
+    if (isGitLab) {
+      clearGitLabError();
+      if (!validateGitLab(body)) return;
+    } else {
+      setError(section, '');
+    }
     button.disabled = true;
+    const label = button.textContent;
+    button.textContent = '保存中…';
     try {
       const { data } = await api(`/settings/${section}`, { method: 'PUT', body });
       await (isGitLab ? refreshGitLab() : refreshChrome()).catch(() => {});
@@ -175,6 +206,7 @@ export function createSettings({ api, notify, explain, refreshGitLab, refreshChr
       else notify(explain(error), true);
     } finally {
       button.disabled = false;
+      button.textContent = label;
     }
   }
 
@@ -188,7 +220,7 @@ export function createSettings({ api, notify, explain, refreshGitLab, refreshChr
     }
   }
 
-  gitlabForm.addEventListener('input', () => { setError('gitlab', ''); updateGitLab(); });
+  gitlabForm.addEventListener('input', () => { clearGitLabError(); updateGitLab(); });
   gitlabForm.addEventListener('submit', (event) => { void save(event, 'gitlab'); });
   chromeForm.addEventListener('submit', (event) => { void save(event, 'chrome'); });
   directory.addEventListener('input', () => { setError('chrome', ''); hideDetection(); updateChrome(); });
@@ -222,7 +254,11 @@ export function createSettings({ api, notify, explain, refreshGitLab, refreshChr
 }
 
 function parseGitLabUrl(value) {
-  const url = URL.parse(value);
+  const address = value.trim();
+  const hasScheme = /^[a-z][a-z\d+.-]*:\/\//i.test(address);
+  const bareAddress = /^(?:[\p{L}\p{N}][\p{L}\p{N}.-]*|\[[a-f\d:]+\])(?::\d+)?(?:\/[^\s\\]*)?$/iu;
+  if (!hasScheme && !bareAddress.test(address)) return '';
+  const url = URL.parse(hasScheme ? address : `https://${address}`);
   if (!url || url.username || url.password || url.search || url.hash) return '';
   const isLocal = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
   if (url.protocol !== 'https:' && !(isLocal && url.protocol === 'http:')) return '';

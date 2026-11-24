@@ -28,9 +28,9 @@ pnpm start
 
 ### 配置 GitLab 个人授权
 
-1. 打开工作台的「连接设置 → GitLab」，填写 GitLab 实例地址。也可以直接粘贴 GitLab 的 OAuth 应用页面地址。工作台会显示回调地址，并提供应用设置的入口。
+1. 打开工作台的「连接设置 → GitLab」，填写 GitLab 实例地址，例如 `gitlab.example.com`。也可以直接粘贴 GitLab 的 OAuth 应用页面地址。工作台会显示回调地址，并提供应用设置的入口。
 2. 在 GitLab 创建 OAuth 应用，粘贴回调地址，勾选 `read_api`。使用公开应用时，将「私密」（Confidential）留空。
-3. 回到工作台填入完整的应用程序 ID。只有 GitLab 勾选了「私密」时，才需要在工作台也勾选并填写密码（Client Secret）。保存后点击「前往 GitLab 授权」，即可在编辑任务时搜索仓库和选择分支。
+3. 回到工作台填入完整的应用程序 ID。只有 GitLab 勾选了「私密」时，才需要在工作台也勾选并填写密码（Client Secret）。看到「GitLab 设置已保存，等待授权」后，点击「前往 GitLab 授权」。授权完成后，即可在编辑任务时搜索仓库和选择分支。
 
 设置保存后立即生效，保存在任务文件同目录的 `settings.json`。保密应用的 Client Secret 在 Windows 上由当前用户加密保存，在其他平台保留在本次本机服务会话中。应用使用 OAuth 授权码和 PKCE，访问令牌保存在进程内存中，服务重启后需要重新授权。任务保存的仓库绑定包含 GitLab 实例，切换连接设置时，已有任务保留原来的仓库和选定分支。 [GitLab OAuth 应用](https://docs.gitlab.com/integration/oauth_provider/) · [GitLab PKCE 流程](https://docs.gitlab.com/api/oauth2/#authorization-code-with-proof-key-for-code-exchange-pkce)
 
