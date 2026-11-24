@@ -4,14 +4,14 @@
 
 ## 本地运行
 
-需要 Node.js 24.12 或更新版本，以及 Chrome 144 或更新版本。
+需要 Node.js 24.12 或更新版本、pnpm 11.9.0，以及 Chrome 144 或更新版本。
 
 ```sh
-npm ci
-npm start
+pnpm install --frozen-lockfile
+pnpm start
 ```
 
-在浏览器中访问 `http://127.0.0.1:4321`。开发时可用 `npm run dev` 自动重启服务。任务及所选证据保存在 `data/tasks.json`，也可以通过 `WORKBENCH_DATA_FILE` 指定文件路径。
+在浏览器中访问 `http://127.0.0.1:4321`。开发时可用 `pnpm dev` 自动重启服务。任务及所选证据保存在 `data/tasks.json`，也可以通过 `WORKBENCH_DATA_FILE` 指定文件路径。
 
 ### 接入已有 Chrome
 
@@ -49,8 +49,8 @@ npm start
 新增采集能力时，可以参考 `src/modules/chrome/evidence.ts` 的 `EvidenceCollector`。例如添加一种页面事件，先在 `src/contracts.ts` 定义记录类型，再将浏览器事件转换成对应记录，最后在 `web/app.js` 增加展示。任务存储通过稳定的记录 ID 保存勾选结果。独立功能可以放到 `src/modules/<name>/`，在 `src/server.ts` 里显式挂载入口。
 
 ```sh
-npm run check
-npm test
+pnpm check
+pnpm test
 ```
 
-常规测试使用本机模拟 GitLab 和 CDP 接口。设置 `WORKBENCH_TEST_CHROME` 为 Chrome 可执行文件路径后，`npm test` 还会运行隔离的真实 Chrome 测试，验证接入已有标签页时页面保持原样，并在同源跳转后继续采集。
+常规测试使用本机模拟 GitLab 和 CDP 接口。设置 `WORKBENCH_TEST_CHROME` 为 Chrome 可执行文件路径后，`pnpm test` 还会运行隔离的真实 Chrome 测试，验证接入已有标签页时页面保持原样，并在同源跳转后继续采集。
