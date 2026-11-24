@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { join } from 'node:path';
+import { extname, join } from 'node:path';
 import { readConfig, settingsPath } from './config.ts';
 import { HttpError, readJson, sendJson } from './http.ts';
 import { ChromeCollector } from './modules/chrome/index.ts';
@@ -11,14 +11,22 @@ import { SettingsStore } from './modules/settings/index.ts';
 import { parseTask, TaskStore } from './modules/tasks/index.ts';
 
 type Config = ReturnType<typeof readConfig>;
-const staticFiles = new Map([
-  ['/', ['index.html', 'text/html; charset=utf-8']],
-  ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
-  ['/settings.js', ['settings.js', 'text/javascript; charset=utf-8']],
-  ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
+const assetTypes = new Map([
+  ['.js', 'text/javascript; charset=utf-8'],
+  ['.css', 'text/css; charset=utf-8'],
+  ['.svg', 'image/svg+xml'],
+  ['.png', 'image/png'],
+  ['.woff2', 'font/woff2'],
 ]);
 
 export async function createWorkbench(config: Config) {
+  const workbench = await createWorkbenchHandler(config);
+  const server = createServer(workbench.handle);
+  server.on('close', workbench.close);
+  return server;
+}
+
+export async function createWorkbenchHandler(config: Config) {
   const store = await TaskStore.open(config.dataFile);
   const settings = await SettingsStore.open(settingsPath(config.dataFile), config);
   let gitlabConfig = settings.gitlab();
@@ -37,11 +45,16 @@ export async function createWorkbench(config: Config) {
       throw new HttpError(403, '请从工作台页面提交操作。');
     }
     const { pathname: path, searchParams: query } = url;
-    const file = staticFiles.get(path);
-    if (file && (method === 'GET' || method === 'HEAD')) {
+    const assetType = /^\/assets\/[\w.-]+$/.test(path) ? assetTypes.get(extname(path)) : undefined;
+    if ((path === '/' || assetType) && (method === 'GET' || method === 'HEAD')) {
+      const file = path === '/' ? 'index.html' : path.slice(1);
+      const contents = await readFile(join(config.distDir, file)).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== 'ENOENT') throw error;
+        if (path === '/') throw new HttpError(503, '请运行 pnpm build 构建工作台前端。');
+        throw new HttpError(404, '找不到工作台前端资源。');
+      });
       if (path === '/') browserSession(request, response);
-      const contents = await readFile(join(config.webDir, file[0]));
-      response.writeHead(200, { 'Content-Type': file[1] });
+      response.writeHead(200, { 'Content-Type': assetType || 'text/html; charset=utf-8' });
       response.end(method === 'HEAD' ? undefined : contents);
       return;
     }
@@ -147,7 +160,7 @@ export async function createWorkbench(config: Config) {
     throw new HttpError(404, '页面或接口不存在。');
   }
 
-  const server = createServer((request, response) => {
+  function handle(request: IncomingMessage, response: ServerResponse) {
     void route(request, response).catch((error: unknown) => {
       if (response.headersSent) return response.destroy();
       if (error instanceof HttpError) sendJson(response, { error: error.message }, error.status);
@@ -156,9 +169,8 @@ export async function createWorkbench(config: Config) {
         sendJson(response, { error: '工作台遇到错误，请查看本机服务日志后重试。' }, 500);
       }
     });
-  });
-  server.on('close', () => chrome.disconnect());
-  return server;
+  }
+  return { handle, close: () => chrome.disconnect() };
 }
 
 function setHeaders(response: ServerResponse) {

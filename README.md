@@ -1,6 +1,6 @@
 # 联调工作台
 
-联调工作台把前后端仓库与分支、测试网址、浏览器请求和控制台日志放在同一个本机任务里。测试人员继续使用已经打开并登录的 Chrome。工作台匹配现有标签页后就自动采集，复现结束后可以勾选证据保存。
+联调工作台把前后端仓库与分支、测试网址、浏览器请求和控制台日志放在同一个本机任务里。界面使用 React 和 Vite，本机 Node.js 服务负责 GitLab 授权和 Chrome 采集。工作台匹配现有标签页后就自动采集，复现结束后可以勾选证据保存。
 
 ## 本地运行
 
@@ -11,7 +11,7 @@ pnpm install --frozen-lockfile
 pnpm start
 ```
 
-在浏览器中访问 `http://127.0.0.1:4321`。开发时可用 `pnpm dev` 自动重启服务。任务及所选证据保存在 `data/tasks.json`，也可以通过 `WORKBENCH_DATA_FILE` 指定文件路径。
+在浏览器中访问 `http://127.0.0.1:4321`。`pnpm start` 会构建前端并启动本机服务。开发时可用 `pnpm dev` 在同一地址运行 Vite 热更新和本机 API。单独运行 `pnpm build` 可生成 `dist/` 中的前端资源。任务及所选证据保存在 `data/tasks.json`，也可以通过 `WORKBENCH_DATA_FILE` 指定文件路径。
 
 ### 接入已有 Chrome
 
@@ -44,9 +44,10 @@ pnpm start
 | `src/modules/settings` | 读写本机连接设置，保护 OAuth 应用密钥 |
 | `src/contracts.ts` | 任务、连接状态和证据的数据格式 |
 | `src/server.ts` | 本机 HTTP 入口和 API 路由 |
-| `web` | 工作台界面 |
+| `web/src` | 工作台的 React 界面和 API 客户端 |
+| `vite.config.ts` | 前端构建及开发模式下的本机 API 接入 |
 
-新增采集能力时，可以参考 `src/modules/chrome/evidence.ts` 的 `EvidenceCollector`。例如添加一种页面事件，先在 `src/contracts.ts` 定义记录类型，再将浏览器事件转换成对应记录，最后在 `web/app.js` 增加展示。任务存储通过稳定的记录 ID 保存勾选结果。独立功能可以放到 `src/modules/<name>/`，在 `src/server.ts` 里显式挂载入口。
+新增采集能力时，可以参考 `src/modules/chrome/evidence.ts` 的 `EvidenceCollector`。例如添加一种页面事件，先在 `src/contracts.ts` 定义记录类型，再将浏览器事件转换成对应记录，最后在 `web/src/EvidencePanel.tsx` 增加展示。任务存储通过稳定的记录 ID 保存勾选结果。独立功能可以放到 `src/modules/<name>/`，在 `src/server.ts` 里显式挂载入口。
 
 ```sh
 pnpm check

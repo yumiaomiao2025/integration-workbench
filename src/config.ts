@@ -17,7 +17,7 @@ export function readConfig() {
     origin,
     dataFile: resolve(process.env.WORKBENCH_DATA_FILE || join(root, 'data', 'tasks.json')),
     chromeDataDir: resolve(process.env.CHROME_USER_DATA_DIR || chromeDataDirectory()),
-    webDir: join(root, 'web'),
+    distDir: join(root, 'dist'),
     gitlab: {
       baseUrl: normalizeGitLabUrl(process.env.GITLAB_URL || 'https://gitlab.com'),
       clientId: process.env.GITLAB_CLIENT_ID?.trim() || '',

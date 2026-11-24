@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
@@ -62,8 +62,12 @@ test('personal GitLab OAuth validates state and PKCE, then lists projects and br
   const origin = `http://127.0.0.1:${port}`;
   const config = {
     ...readConfig(), port, origin, dataFile: join(data, 'tasks.json'), chromeDataDir: data,
+    distDir: join(data, 'dist'),
     gitlab: { baseUrl: 'https://gitlab.com', clientId: '', clientSecret: '', redirectUri: `${origin}/api/gitlab/callback` },
   };
+  await mkdir(join(config.distDir, 'assets'), { recursive: true });
+  await writeFile(join(config.distDir, 'index.html'), '<script type="module" src="/assets/index.js"></script>');
+  await writeFile(join(config.distDir, 'assets', 'index.js'), 'export {};');
   await writeFile(config.dataFile, JSON.stringify({ version: 1, tasks: [{
     id: 'd586d40e-a7bb-4c8d-9e01-6e4e853adba8', title: '既有任务', url: 'https://staging.example.test',
     frontend: { projectId: 52, path: 'team/orders', branch: 'feature/orders', commitSha: sha }, backend: null, evidence: [],
@@ -71,9 +75,17 @@ test('personal GitLab OAuth validates state and PKCE, then lists projects and br
   const app = await createWorkbench(config);
   await listen(app, port);
   t.after(async () => { await stop(app); await stop(upstream); });
-  const fetchApi = (path: string, options?: RequestInit) => fetch(`${origin}${path}`, { redirect: 'manual', ...options });
+  const fetchApi = (path: string, options?: RequestInit) => {
+    const headers = new Headers(options?.headers);
+    headers.set('Connection', 'close');
+    return fetch(`${origin}${path}`, { redirect: 'manual', ...options, headers });
+  };
   const first = await fetchApi('/');
   assert.equal(first.status, 200);
+  assert.match(await first.text(), /src="\/assets\/index\.js"/);
+  const asset = await fetchApi('/assets/index.js');
+  assert.equal(asset.headers.get('content-type'), 'text/javascript; charset=utf-8');
+  assert.equal(await asset.text(), 'export {};');
   const cookie = first.headers.get('set-cookie')!.split(';')[0];
   const auth = { headers: { Cookie: cookie } };
   const install = (body: unknown) => fetchApi('/api/settings/gitlab', {
@@ -210,7 +222,7 @@ test('chooses among existing tabs and continuously collects and saves only selec
 
   const request = async <T>(path: string, method = 'GET', body?: unknown) => {
     const response = await fetch(`${origin}/api${path}`, {
-      method, headers: { Origin: origin, 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      method, headers: { Origin: origin, 'Content-Type': 'application/json', Connection: 'close' }, body: JSON.stringify(body),
     });
     assert.ok(response.ok, `${response.status} ${path}`);
     return await response.json() as T;
